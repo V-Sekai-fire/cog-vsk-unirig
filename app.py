@@ -65,7 +65,6 @@ stream = AsyncStream()
 outputs_folder = './outputs/'
 os.makedirs(outputs_folder, exist_ok=True)
 
-
 @torch.no_grad()
 def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache):
     total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
@@ -272,7 +271,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
     stream.output_queue.push(('end', None))
     return
 
-@spaces.GPU()
+@spaces.GPU(duration=120)
 def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache):
     global stream
     assert input_image is not None, 'No input image!'
@@ -315,7 +314,22 @@ quick_prompts = [[x] for x in quick_prompts]
 css = make_progress_bar_css()
 block = gr.Blocks(css=css).queue()
 with block:
-    gr.Markdown('# FramePack')
+    gr.Markdown('''
+    # [FramePack](https://github.com/lllyasviel/FramePack)
+    
+    ## Image to Video Animation Tool
+    
+    FramePack transforms still images into smooth, natural-looking animations using AI. Upload a portrait or character image and describe the motion you want to see.
+    
+    ### How to use:
+    1. **Upload an image** - Best results with clear, well-lit portraits
+    2. **Enter a prompt** describing the movement (or select from quick examples)
+    3. **Click "Start Generation"** and wait for the video to be created
+    
+    Generation takes a few minutes. The video is created in reverse order, so the beginning of the animation will appear last.
+    
+    *For high-quality results, use simple and clear descriptions of movements.*
+    ''')
     with gr.Row():
         with gr.Column():
             input_image = gr.Image(sources='upload', type="numpy", label="Image", height=320)
@@ -354,4 +368,4 @@ with block:
     end_button.click(fn=end_process)
 
 
-block.queue().launch(share=True)
+block.launch(share=True)
