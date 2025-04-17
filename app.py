@@ -43,7 +43,6 @@ vae.enable_slicing()
 vae.enable_tiling()
 
 transformer.high_quality_fp32_output_for_inference = True
-print('transformer.high_quality_fp32_output_for_inference = True')
 
 transformer.to(dtype=torch.bfloat16)
 vae.to(dtype=torch.float16)
@@ -316,10 +315,8 @@ block = gr.Blocks(css=css).queue()
 with block:
     gr.Markdown('''
     # [FramePack](https://github.com/lllyasviel/FramePack)
-    
-    ## Image to Video Animation Tool
-    
-    FramePack transforms still images into smooth, natural-looking animations using AI. Upload a portrait or character image and describe the motion you want to see.
+        
+    This implementation is based on the `demo_gradio.py` that [Lvmin Zhang](https://github.com/lllyasviel) provided
     
     ### How to use:
     1. **Upload an image** - Best results with clear, well-lit portraits
@@ -345,7 +342,10 @@ with block:
                 use_teacache = gr.Checkbox(label='Use TeaCache', value=True, info='Faster speed, but often makes hands and fingers slightly worse.')
 
                 n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=False)  # Not used
-                seed = gr.Number(label="Seed", value=31337, precision=0)
+                with gr.Row():
+                    seed = gr.Number(label="Seed", value=31337, precision=0, scale=4)
+                    random_seed_button = gr.Button(value="🔁", variant="primary", scale=1)
+                    random_seed_button.click(lambda: int(torch.randint(0, 2**32 - 1, (1,)).item()), inputs=[], outputs=seed, show_progress=False, queue=False)
 
                 total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=5, step=0.1)
                 latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=9, step=1, visible=False)  # Should not change
