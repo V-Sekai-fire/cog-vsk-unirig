@@ -13,3 +13,4 @@ einops
 opencv-contrib-python
 safetensors
 spaces
+torchvision
