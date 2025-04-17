@@ -342,7 +342,7 @@ with block:
                 use_teacache = gr.Checkbox(label='Use TeaCache', value=True, info='Faster speed, but often makes hands and fingers slightly worse.')
 
                 n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=False)  # Not used
-                with gr.Row():
+                with gr.Row(equal_height=True):
                     seed = gr.Number(label="Seed", value=31337, precision=0, scale=4)
                     random_seed_button = gr.Button(value="🔁", variant="primary", scale=1)
                     random_seed_button.click(lambda: int(torch.randint(0, 2**32 - 1, (1,)).item()), inputs=[], outputs=seed, show_progress=False, queue=False)
