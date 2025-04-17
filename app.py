@@ -1,14 +1,11 @@
 import spaces
 import os
 
-os.environ['HF_HOME'] = os.path.abspath(os.path.realpath(os.path.join(os.path.dirname(__file__), './hf_download')))
-
 import gradio as gr
 import torch
 import traceback
 import einops
 import numpy as np
-import argparse
 
 from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
@@ -24,18 +21,6 @@ from transformers import SiglipImageProcessor, SiglipVisionModel
 from diffusers_helper.clip_vision import hf_clip_vision_encode
 from diffusers_helper.bucket_tools import find_nearest_bucket
 
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--share', action='store_true')
-parser.add_argument("--server", type=str, default='0.0.0.0')
-parser.add_argument("--port", type=int, required=False)
-parser.add_argument("--inbrowser", action='store_true')
-args = parser.parse_args()
-
-# for win desktop probably use --server 127.0.0.1 --inbrowser
-# For linux server probably use --server 127.0.0.1 or do not use any cmd flags
-
-print(args)
 
 free_mem_gb = get_cuda_free_memory_gb(gpu)
 high_vram = free_mem_gb > 60
@@ -393,9 +378,4 @@ with block:
     end_button.click(fn=end_process)
 
 
-block.launch(
-    server_name=args.server,
-    server_port=args.port,
-    share=args.share,
-    inbrowser=args.inbrowser,
-)
+block.queue().launch(share=True)
