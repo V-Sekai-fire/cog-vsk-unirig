@@ -317,8 +317,7 @@ quick_prompts = [[x] for x in quick_prompts]
 
 
 css = make_progress_bar_css()
-block = gr.Blocks(css=css).queue()
-with block:
+with gr.Blocks(css=css) as app:
     gr.Markdown('''
     # [FramePack](https://github.com/lllyasviel/FramePack)
         
@@ -373,5 +372,5 @@ with block:
     start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
     end_button.click(fn=end_process)
 
-
-block.launch(share=True, inbrowser=True)
+if __name__ == "__main__":
+    app.queue().launch(share=True, ssr_mode=False)
