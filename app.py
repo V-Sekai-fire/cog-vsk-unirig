@@ -374,4 +374,4 @@ with block:
     end_button.click(fn=end_process)
 
 
-block.launch(share=True)
+block.launch(share=True, inbrowser=True)
