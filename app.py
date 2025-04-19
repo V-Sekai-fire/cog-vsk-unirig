@@ -373,4 +373,4 @@ with gr.Blocks(css=css) as app:
     end_button.click(fn=end_process)
 
 if __name__ == "__main__":
-    app.queue().launch(share=True, ssr_mode=False)
+    app.queue().launch(share=True, ssr_mode=True)
