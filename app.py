@@ -279,31 +279,54 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
 
 def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache):
     global stream
-    assert input_image is not None, 'No input image!'
+    
+    try:
+        # Check for valid input image
+        if input_image is None:
+            yield None, None, '', 'Error: No input image provided!', gr.update(interactive=True), gr.update(interactive=False)
+            return
+            
+        # Check if input_image is valid
+        if isinstance(input_image, str):
+            # Path was provided but file might not exist
+            import os
+            if not os.path.exists(input_image):
+                yield None, None, '', f'Error: Image file not found at path: {input_image}', gr.update(interactive=True), gr.update(interactive=False)
+                return
 
-    yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True)
+        yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True)
 
-    stream = AsyncStream()
+        stream = AsyncStream()
 
-    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache)
+        async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache)
 
-    output_filename = None
+        output_filename = None
 
-    while True:
-        flag, data = stream.output_queue.next()
+        while True:
+            flag, data = stream.output_queue.next()
 
-        if flag == 'file':
-            output_filename = data
-            yield output_filename, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
+            if flag == 'file':
+                output_filename = data
+                yield output_filename, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
+            
+            if flag == 'progress':
+                preview, desc, html = data
+                yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
 
-        if flag == 'progress':
-            preview, desc, html = data
-            yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
-
-        if flag == 'end':
-            yield output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
-            break
-
+            if flag == 'end':
+                yield output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
+                break
+                
+    except FileNotFoundError as e:
+        error_message = f"Error: Could not find the input image file. Please try a different image or filename without special characters.\nDetails: {str(e)}"
+        print(error_message)
+        yield None, None, '', error_message, gr.update(interactive=True), gr.update(interactive=False)
+        
+    except Exception as e:
+        error_message = f"An unexpected error occurred: {str(e)}"
+        print(error_message)
+        traceback.print_exc()
+        yield None, None, '', error_message, gr.update(interactive=True), gr.update(interactive=False)
 
 def end_process():
     stream.input_queue.push('end')
@@ -354,7 +377,7 @@ with gr.Blocks(css=css) as app:
 
                 total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=5, step=0.1)
                 latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=9, step=1, visible=False)  # Should not change
-                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=10, step=1, info='Changing this value is not recommended.')
+                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1, info='Changing this value is not recommended.')
 
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=1.0, step=0.01, visible=False)  # Should not change
                 gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=10.0, step=0.01, info='Changing this value is not recommended.')
