@@ -1,399 +1,538 @@
-import spaces
-import os
-
 import gradio as gr
-import torch
+import tempfile
+import os
+import sys
+import shutil
+import subprocess
 import traceback
-import einops
-import numpy as np
+from pathlib import Path
+from typing import Optional, Tuple, List
+import spaces
 
-from PIL import Image
-from diffusers import AutoencoderKLHunyuanVideo
-from transformers import LlamaModel, CLIPTextModel, LlamaTokenizerFast, CLIPTokenizer
-from diffusers_helper.hunyuan import encode_prompt_conds, vae_decode, vae_encode, vae_decode_fake
-from diffusers_helper.utils import save_bcthw_as_mp4, crop_or_pad_yield_mask, soft_append_bcthw, resize_and_center_crop, generate_timestamp
-from diffusers_helper.models.hunyuan_video_packed import HunyuanVideoTransformer3DModelPacked
-from diffusers_helper.pipelines.k_diffusion_hunyuan import sample_hunyuan
-from diffusers_helper.memory import cpu, gpu, move_model_to_device_with_memory_preservation, offload_model_from_device_for_memory_preservation, fake_diffusers_current_device, DynamicSwapInstaller, unload_complete_models, load_model_as_complete
-from diffusers_helper.thread_utils import AsyncStream, async_run
-from diffusers_helper.gradio.progress_bar import make_progress_bar_css, make_progress_bar_html
-from transformers import SiglipImageProcessor, SiglipVisionModel
-from diffusers_helper.clip_vision import hf_clip_vision_encode
-from diffusers_helper.bucket_tools import find_nearest_bucket
+import subprocess
+subprocess.run('pip install flash-attn --no-build-isolation', env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"}, shell=True)
 
+# Add the current directory to the path so we can import UniRig modules
+sys.path.insert(0, str(Path(__file__).parent))
 
-text_encoder = LlamaModel.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder='text_encoder', torch_dtype=torch.float16).cpu()
-text_encoder_2 = CLIPTextModel.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder='text_encoder_2', torch_dtype=torch.float16).cpu()
-tokenizer = LlamaTokenizerFast.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder='tokenizer')
-tokenizer_2 = CLIPTokenizer.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder='tokenizer_2')
-vae = AutoencoderKLHunyuanVideo.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder='vae', torch_dtype=torch.float16).cpu()
+import trimesh
+import yaml
 
-feature_extractor = SiglipImageProcessor.from_pretrained("lllyasviel/flux_redux_bfl", subfolder='feature_extractor')
-image_encoder = SiglipVisionModel.from_pretrained("lllyasviel/flux_redux_bfl", subfolder='image_encoder', torch_dtype=torch.float16).cpu()
-
-transformer = HunyuanVideoTransformer3DModelPacked.from_pretrained('lllyasviel/FramePackI2V_HY', torch_dtype=torch.bfloat16).cpu()
-
-vae.eval()
-text_encoder.eval()
-text_encoder_2.eval()
-image_encoder.eval()
-transformer.eval()
-
-vae.enable_slicing()
-vae.enable_tiling()
-
-transformer.high_quality_fp32_output_for_inference = True
-
-transformer.to(dtype=torch.bfloat16)
-vae.to(dtype=torch.float16)
-image_encoder.to(dtype=torch.float16)
-text_encoder.to(dtype=torch.float16)
-text_encoder_2.to(dtype=torch.float16)
-
-vae.requires_grad_(False)
-text_encoder.requires_grad_(False)
-text_encoder_2.requires_grad_(False)
-image_encoder.requires_grad_(False)
-transformer.requires_grad_(False)
-
-# DynamicSwapInstaller.install_model(transformer, device=gpu)
-# DynamicSwapInstaller.install_model(text_encoder, device=gpu)
-
-text_encoder.to(gpu)
-text_encoder_2.to(gpu)
-image_encoder.to(gpu)
-vae.to(gpu)
-transformer.to(gpu)
-
-stream = AsyncStream()
-
-outputs_folder = './outputs/'
-os.makedirs(outputs_folder, exist_ok=True)
-
-@spaces.GPU(duration=120)
-@torch.no_grad()
-def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache):
-    total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
-    total_latent_sections = int(max(round(total_latent_sections), 1))
-
-    job_id = generate_timestamp()
-
-    stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Starting ...'))))
-
-    try:
-        # unload_complete_models(
-        #     text_encoder, text_encoder_2, image_encoder, vae, transformer
-        # )
-
-        # Text encoding
-
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Text encoding ...'))))
-
-        # fake_diffusers_current_device(text_encoder, gpu)  # since we only encode one text - that is one model move and one encode, offload is same time consumption since it is also one load and one encode.
-        # load_model_as_complete(text_encoder_2, target_device=gpu)
-
-        llama_vec, clip_l_pooler = encode_prompt_conds(prompt, text_encoder, text_encoder_2, tokenizer, tokenizer_2)
-
-        if cfg == 1:
-            llama_vec_n, clip_l_pooler_n = torch.zeros_like(llama_vec), torch.zeros_like(clip_l_pooler)
-        else:
-            llama_vec_n, clip_l_pooler_n = encode_prompt_conds(n_prompt, text_encoder, text_encoder_2, tokenizer, tokenizer_2)
-
-        llama_vec, llama_attention_mask = crop_or_pad_yield_mask(llama_vec, length=512)
-        llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
-
-        # Processing input image
-
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Image processing ...'))))
-
-        H, W, C = input_image.shape
-        height, width = find_nearest_bucket(H, W, resolution=640)
-        input_image_np = resize_and_center_crop(input_image, target_width=width, target_height=height)
-
-        Image.fromarray(input_image_np).save(os.path.join(outputs_folder, f'{job_id}.png'))
-
-        input_image_pt = torch.from_numpy(input_image_np).float() / 127.5 - 1
-        input_image_pt = input_image_pt.permute(2, 0, 1)[None, :, None]
-
-        # VAE encoding
-
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'VAE encoding ...'))))
-
-        # load_model_as_complete(vae, target_device=gpu)
-
-        start_latent = vae_encode(input_image_pt, vae)
-
-        # CLIP Vision
-
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'CLIP Vision encoding ...'))))
-
-        # load_model_as_complete(image_encoder, target_device=gpu)
-
-        image_encoder_output = hf_clip_vision_encode(input_image_np, feature_extractor, image_encoder)
-        image_encoder_last_hidden_state = image_encoder_output.last_hidden_state
-
-        # Dtype
-
-        llama_vec = llama_vec.to(transformer.dtype)
-        llama_vec_n = llama_vec_n.to(transformer.dtype)
-        clip_l_pooler = clip_l_pooler.to(transformer.dtype)
-        clip_l_pooler_n = clip_l_pooler_n.to(transformer.dtype)
-        image_encoder_last_hidden_state = image_encoder_last_hidden_state.to(transformer.dtype)
-
-        # Sampling
-
-        stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Start sampling ...'))))
-
-        rnd = torch.Generator("cpu").manual_seed(seed)
-        num_frames = latent_window_size * 4 - 3
-
-        history_latents = torch.zeros(size=(1, 16, 1 + 2 + 16, height // 8, width // 8), dtype=torch.float32).cpu()
-        history_pixels = None
-        total_generated_latent_frames = 0
-
-        latent_paddings = reversed(range(total_latent_sections))
-
-        if total_latent_sections > 4:
-            # In theory the latent_paddings should follow the above sequence, but it seems that duplicating some
-            # items looks better than expanding it when total_latent_sections > 4
-            # One can try to remove below trick and just
-            # use `latent_paddings = list(reversed(range(total_latent_sections)))` to compare
-            latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
-
-        for latent_padding in latent_paddings:
-            is_last_section = latent_padding == 0
-            latent_padding_size = latent_padding * latent_window_size
-
-            if stream.input_queue.top() == 'end':
-                stream.output_queue.push(('end', None))
-                return
-
-            print(f'latent_padding_size = {latent_padding_size}, is_last_section = {is_last_section}')
-
-            indices = torch.arange(0, sum([1, latent_padding_size, latent_window_size, 1, 2, 16])).unsqueeze(0)
-            clean_latent_indices_pre, blank_indices, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices = indices.split([1, latent_padding_size, latent_window_size, 1, 2, 16], dim=1)
-            clean_latent_indices = torch.cat([clean_latent_indices_pre, clean_latent_indices_post], dim=1)
-
-            clean_latents_pre = start_latent.to(history_latents)
-            clean_latents_post, clean_latents_2x, clean_latents_4x = history_latents[:, :, :1 + 2 + 16, :, :].split([1, 2, 16], dim=2)
-            clean_latents = torch.cat([clean_latents_pre, clean_latents_post], dim=2)
-
-            # unload_complete_models()
-            # move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
-
-            if use_teacache:
-                transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
-            else:
-                transformer.initialize_teacache(enable_teacache=False)
-
-            def callback(d):
-                preview = d['denoised']
-                preview = vae_decode_fake(preview)
-
-                preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
-                preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
-
-                if stream.input_queue.top() == 'end':
-                    stream.output_queue.push(('end', None))
-                    raise KeyboardInterrupt('User ends the task.')
-
-                current_step = d['i'] + 1
-                percentage = int(100.0 * current_step / steps)
-                hint = f'Sampling {current_step}/{steps}'
-                desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
-                stream.output_queue.push(('progress', (preview, desc, make_progress_bar_html(percentage, hint))))
-                return
-
-            generated_latents = sample_hunyuan(
-                transformer=transformer,
-                sampler='unipc',
-                width=width,
-                height=height,
-                frames=num_frames,
-                real_guidance_scale=cfg,
-                distilled_guidance_scale=gs,
-                guidance_rescale=rs,
-                # shift=3.0,
-                num_inference_steps=steps,
-                generator=rnd,
-                prompt_embeds=llama_vec,
-                prompt_embeds_mask=llama_attention_mask,
-                prompt_poolers=clip_l_pooler,
-                negative_prompt_embeds=llama_vec_n,
-                negative_prompt_embeds_mask=llama_attention_mask_n,
-                negative_prompt_poolers=clip_l_pooler_n,
-                device=gpu,
-                dtype=torch.bfloat16,
-                image_embeddings=image_encoder_last_hidden_state,
-                latent_indices=latent_indices,
-                clean_latents=clean_latents,
-                clean_latent_indices=clean_latent_indices,
-                clean_latents_2x=clean_latents_2x,
-                clean_latent_2x_indices=clean_latent_2x_indices,
-                clean_latents_4x=clean_latents_4x,
-                clean_latent_4x_indices=clean_latent_4x_indices,
-                callback=callback,
+class UniRigDemo:
+    """Main class for the UniRig Gradio demo application."""
+    
+    def __init__(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.results_dir = os.path.join(self.temp_dir, "results")
+        os.makedirs(self.results_dir, exist_ok=True)
+        
+        # Supported file formats
+        self.supported_formats = ['.obj', '.fbx', '.glb', '.gltf', '.vrm']
+        
+        # Initialize models (will be loaded on demand)
+        self.skeleton_model = None
+        self.skin_model = None
+        
+    def load_config(self, config_path: str) -> dict:
+        """Load YAML configuration file."""
+        try:
+            with open(config_path, 'r') as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load config {config_path}: {str(e)}")
+    
+    def validate_input_file(self, file_path: str) -> bool:
+        """Validate if the input file format is supported."""
+        if not file_path or not os.path.exists(file_path):
+            return False
+        
+        file_ext = Path(file_path).suffix.lower()
+        return file_ext in self.supported_formats
+    
+    def preprocess_model(self, input_file: str, output_dir: str) -> str:
+        """
+        Preprocess the 3D model for inference.
+        This extracts mesh data and saves it as .npz format.
+        """
+        try:
+            # Create extraction command
+            extract_cmd = [
+                'python', '-m', 'src.data.extract',
+                '--config', 'configs/data/quick_inference.yaml',
+                '--input', input_file,
+                '--output_dir', output_dir,
+                '--force_override', 'true',
+                '--faces_target_count', '50000'
+            ]
+            
+            # Run extraction
+            result = subprocess.run(
+                extract_cmd, 
+                cwd=str(Path(__file__).parent),
+                capture_output=True, 
+                text=True
             )
-
-            if is_last_section:
-                generated_latents = torch.cat([start_latent.to(generated_latents), generated_latents], dim=2)
-
-            total_generated_latent_frames += int(generated_latents.shape[2])
-            history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
-
-            # offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
-            # load_model_as_complete(vae, target_device=gpu)
-
-            real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
-
-            if history_pixels is None:
-                history_pixels = vae_decode(real_history_latents, vae).cpu()
-            else:
-                section_latent_frames = (latent_window_size * 2 + 1) if is_last_section else (latent_window_size * 2)
-                overlapped_frames = latent_window_size * 4 - 3
-
-                current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae).cpu()
-                history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
-
-            # unload_complete_models()
-
-            output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
-
-            save_bcthw_as_mp4(history_pixels, output_filename, fps=30)
-
-            print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
-
-            stream.output_queue.push(('file', output_filename))
-
-            if is_last_section:
-                break
-    except:
-        traceback.print_exc()
-
-        # unload_complete_models(
-        #     text_encoder, text_encoder_2, image_encoder, vae, transformer
-        # )
-
-    stream.output_queue.push(('end', None))
-    return
-
-def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache):
-    global stream
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"Extraction failed: {result.stderr}")
+            
+            # Find the generated .npz file
+            npz_files = list(Path(output_dir).glob("*.npz"))
+            if not npz_files:
+                raise RuntimeError("No .npz file generated during preprocessing")
+            
+            return str(npz_files[0])
+            
+        except Exception as e:
+            raise RuntimeError(f"Preprocessing failed: {str(e)}")
     
-    try:
-        # Check for valid input image
-        if input_image is None:
-            yield None, None, '', 'Error: No input image provided!', gr.update(interactive=True), gr.update(interactive=False)
-            return
+    def generate_skeleton(self, input_file: str, seed: int = 12345) -> Tuple[str, str, str]:
+        """
+        Generate skeleton for the input 3D model.
+        
+        Args:
+            input_file: Path to the input 3D model file
+            seed: Random seed for reproducible results
             
-        # Check if input_image is valid
-        if isinstance(input_image, str):
-            # Path was provided but file might not exist
-            import os
-            if not os.path.exists(input_image):
-                yield None, None, '', f'Error: Image file not found at path: {input_image}', gr.update(interactive=True), gr.update(interactive=False)
-                return
-
-        yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True)
-
-        stream = AsyncStream()
-
-        async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache)
-
-        output_filename = None
-
-        while True:
-            flag, data = stream.output_queue.next()
-
-            if flag == 'file':
-                output_filename = data
-                yield output_filename, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
+        Returns:
+            Tuple of (status_message, output_file_path, preview_info)
+        """
+        try:
+            # Validate input
+            if not self.validate_input_file(input_file):
+                return "Error: Invalid or unsupported file format. Supported: " + ", ".join(self.supported_formats), "", ""
             
-            if flag == 'progress':
-                preview, desc, html = data
-                yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
+            # Create working directory
+            work_dir = os.path.join(self.temp_dir, f"skeleton_{seed}")
+            os.makedirs(work_dir, exist_ok=True)
+            
+            # Copy input file to work directory
+            input_name = Path(input_file).name
+            work_input = os.path.join(work_dir, input_name)
+            shutil.copy2(input_file, work_input)
+            
+            # Generate skeleton using the launch script
+            output_file = os.path.join(work_dir, f"{Path(input_name).stem}_skeleton.fbx")
+            
+            skeleton_cmd = [
+                'bash', 'launch/inference/generate_skeleton.sh',
+                '--input', work_input,
+                '--output', output_file,
+                '--seed', str(seed)
+            ]
+            
+            # Run skeleton generation
+            result = subprocess.run(
+                skeleton_cmd,
+                cwd=str(Path(__file__).parent),
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                return f"Error: Skeleton generation failed: {result.stderr}", "", ""
+            
+            if not os.path.exists(output_file):
+                return "Error: Skeleton file was not generated", "", ""
+            
+            # Generate preview information
+            preview_info = self.generate_model_preview(output_file)
+            
+            return "✅ Skeleton generated successfully!", output_file, preview_info
+            
+        except Exception as e:
+            error_msg = f"Error: {str(e)}"
+            traceback.print_exc()
+            return error_msg, "", ""
+    
+    def generate_skinning(self, skeleton_file: str) -> Tuple[str, str, str]:
+        """
+        Generate skinning weights for the skeleton.
+        
+        Args:
+            skeleton_file: Path to the skeleton file (from skeleton generation step)
+            
+        Returns:
+            Tuple of (status_message, output_file_path, preview_info)
+        """
+        try:
+            if not skeleton_file or not os.path.exists(skeleton_file):
+                return "Error: No skeleton file provided or file doesn't exist", "", ""
+            
+            # Create output directory
+            work_dir = Path(skeleton_file).parent
+            output_file = os.path.join(work_dir, f"{Path(skeleton_file).stem}_skin.fbx")
+            
+            # Generate skinning using the launch script
+            skin_cmd = [
+                'bash', 'launch/inference/generate_skin.sh',
+                '--input', skeleton_file,
+                '--output', output_file
+            ]
+            
+            # Run skinning generation
+            result = subprocess.run(
+                skin_cmd,
+                cwd=str(Path(__file__).parent),
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                return f"Error: Skinning generation failed: {result.stderr}", "", ""
+            
+            if not os.path.exists(output_file):
+                return "Error: Skinning file was not generated", "", ""
+            
+            # Generate preview information
+            preview_info = self.generate_model_preview(output_file)
+            
+            return "✅ Skinning weights generated successfully!", output_file, preview_info
+            
+        except Exception as e:
+            error_msg = f"Error: {str(e)}"
+            traceback.print_exc()
+            return error_msg, "", ""
+    
+    def merge_results(self, original_file: str, rigged_file: str) -> Tuple[str, str, str]:
+        """
+        Merge the rigged skeleton/skin with the original model.
+        
+        Args:
+            original_file: Path to the original 3D model
+            rigged_file: Path to the rigged file (skeleton or skin)
+            
+        Returns:
+            Tuple of (status_message, output_file_path, preview_info)
+        """
+        try:
+            if not original_file or not os.path.exists(original_file):
+                return "Error: Original file not provided or doesn't exist", "", ""
+            
+            if not rigged_file or not os.path.exists(rigged_file):
+                return "Error: Rigged file not provided or doesn't exist", "", ""
+            
+            # Create output file
+            work_dir = Path(rigged_file).parent
+            output_file = os.path.join(work_dir, f"{Path(original_file).stem}_rigged.glb")
+            
+            # Merge using the launch script
+            merge_cmd = [
+                'bash', 'launch/inference/merge.sh',
+                '--source', rigged_file,
+                '--target', original_file,
+                '--output', output_file
+            ]
+            
+            # Run merge
+            result = subprocess.run(
+                merge_cmd,
+                cwd=str(Path(__file__).parent),
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                return f"Error: Merge failed: {result.stderr}", "", ""
+            
+            if not os.path.exists(output_file):
+                return "Error: Merged file was not generated", "", ""
+            
+            # Generate preview information
+            preview_info = self.generate_model_preview(output_file)
+            
+            return "✅ Model rigging completed successfully!", output_file, preview_info
+            
+        except Exception as e:
+            error_msg = f"Error: {str(e)}"
+            traceback.print_exc()
+            return error_msg, "", ""
+    
+    def generate_model_preview(self, model_path: str) -> str:
+        """
+        Generate preview information for a 3D model.
+        
+        Args:
+            model_path: Path to the model file
+            
+        Returns:
+            HTML string with model information
+        """
+        try:
+            if not os.path.exists(model_path):
+                return "Model file not found"
+            
+            # Try to load with trimesh for basic info
+            try:
+                mesh = trimesh.load(model_path)
+                if hasattr(mesh, 'vertices'):
+                    vertices_count = len(mesh.vertices)
+                    faces_count = len(mesh.faces) if hasattr(mesh, 'faces') else 0
+                else:
+                    vertices_count = 0
+                    faces_count = 0
+            except Exception:
+                vertices_count = 0
+                faces_count = 0
+            
+            file_size = os.path.getsize(model_path)
+            file_size_mb = file_size / (1024 * 1024)
+            
+            preview_html = f"""
+            <div style="padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9;">
+                <h4>📊 Model Information</h4>
+                <p><strong>File:</strong> {Path(model_path).name}</p>
+                <p><strong>Size:</strong> {file_size_mb:.2f} MB</p>
+                <p><strong>Vertices:</strong> {vertices_count:,}</p>
+                <p><strong>Faces:</strong> {faces_count:,}</p>
+                <p><strong>Format:</strong> {Path(model_path).suffix.upper()}</p>
+            </div>
+            """
+            
+            return preview_html
+            
+        except Exception as e:
+            return f"Error generating preview: {str(e)}"
+    
+    def complete_pipeline(self, input_file: str, seed: int = 12345) -> Tuple[str, str, str, str, str]:
+        """
+        Run the complete rigging pipeline: skeleton generation → skinning → merge.
+        
+        Args:
+            input_file: Path to the input 3D model file
+            seed: Random seed for reproducible results
+            
+        Returns:
+            Tuple of status messages and file paths for each step
+        """
+        try:
+            # Step 1: Generate skeleton
+            skeleton_status, skeleton_file, skeleton_preview = self.generate_skeleton(input_file, seed)
+            if not skeleton_file:
+                return skeleton_status, "", "", "", ""
+            
+            # Step 2: Generate skinning
+            skin_status, skin_file, skin_preview = self.generate_skinning(skeleton_file)
+            if not skin_file:
+                return f"{skeleton_status}\n{skin_status}", skeleton_file, "", "", ""
+            
+            # Step 3: Merge results
+            merge_status, final_file, final_preview = self.merge_results(input_file, skin_file)
+            
+            # Combine all status messages
+            combined_status = f"""
+            🏗️ **Pipeline Complete!**
+            
+            **Step 1 - Skeleton Generation:** ✅ Complete
+            **Step 2 - Skinning Weights:** ✅ Complete  
+            **Step 3 - Final Merge:** ✅ Complete
+            
+            {merge_status}
+            """
+            
+            return combined_status, skeleton_file, skin_file, final_file, final_preview
+            
+        except Exception as e:
+            error_msg = f"Pipeline Error: {str(e)}"
+            traceback.print_exc()
+            return error_msg, "", "", "", ""
 
-            if flag == 'end':
-                yield output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
-                break
+
+def create_demo_interface():
+    """Create and configure the Gradio interface."""
+    
+    demo_instance = UniRigDemo()
+    
+    with gr.Blocks(title="UniRig - 3D Model Rigging Demo") as interface:
+        
+        # Header
+        gr.HTML("""
+        <div class="title" style="text-align: center">
+            <h1>🎯 UniRig: Automated 3D Model Rigging</h1>
+            <p style="font-size: 1.1em; color: #6b7280;">
+                Leverage deep learning to automatically generate skeletons and skinning weights for your 3D models
+            </p>
+        </div>
+        """)
+        
+        # Information Section
+        gr.HTML("""
+        <h3>📚 About UniRig</h3>
+        <p>UniRig is a state-of-the-art framework that automates the complex process of 3D model rigging:</p>
+        <ul>
+            <li><strong>Skeleton Generation:</strong> AI predicts optimal bone structures</li>
+            <li><strong>Skinning Weights:</strong> Automatic vertex-to-bone weight assignment</li>
+            <li><strong>Universal Support:</strong> Works with humans, animals, and objects</li>
+        </ul>
+        <p><strong>Supported formats:</strong> .obj, .fbx, .glb, .gltf, .vrm</p>
+        """)
+        
+        # Main Interface Tabs
+        with gr.Tabs():
+            
+            # Complete Pipeline Tab
+            with gr.Tab("🚀 Complete Pipeline", elem_id="pipeline-tab"):                
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        pipeline_input = gr.Model3D(
+                            label="Upload 3D Model",
+                            display_mode="solid",
+                        )
+                        pipeline_seed = gr.Slider(
+                            minimum=1,
+                            maximum=99999,
+                            value=12345,
+                            step=1,
+                            label="Random Seed (for reproducible results)"
+                        )
+                        pipeline_btn = gr.Button("🎯 Start Complete Pipeline", variant="primary", size="lg")
+                    
+                    with gr.Column(scale=1):
+                        pipeline_status = gr.Markdown("Ready to process your 3D model...")
+                        pipeline_preview = gr.HTML("")
                 
-    except FileNotFoundError as e:
-        error_message = f"Error: Could not find the input image file. Please try a different image or filename without special characters.\nDetails: {str(e)}"
-        print(error_message)
-        yield None, None, '', error_message, gr.update(interactive=True), gr.update(interactive=False)
+                with gr.Row():
+                    with gr.Column():
+                        gr.HTML("<h4>📥 Download Results</h4>")
+                        pipeline_skeleton_out = gr.File(label="Skeleton (.fbx)", visible=False)
+                        pipeline_skin_out = gr.File(label="Skinning Weights (.fbx)", visible=False)
+                        pipeline_final_out = gr.File(label="Final Rigged Model (.glb)", visible=False)
+                
+                pipeline_btn.click(
+                    fn=demo_instance.complete_pipeline,
+                    inputs=[pipeline_input, pipeline_seed],
+                    outputs=[pipeline_status, pipeline_skeleton_out, pipeline_skin_out, 
+                            pipeline_final_out, pipeline_preview]
+                )
+            
+            # Step-by-Step Tab
+            with gr.Tab("🔧 Step-by-Step Process", elem_id="stepwise-tab"):
+                gr.HTML("<h3>Manual Step-by-Step Rigging Process</h3>")
+                gr.HTML("<p>Process your model step by step with full control over each stage.</p>")
+                
+                # Step 1: Skeleton Generation
+                with gr.Group():
+                    gr.HTML("<h4>Step 1: Skeleton Generation</h4>")
+                    with gr.Row():
+                        with gr.Column():
+                            step1_input = gr.File(
+                                label="Upload 3D Model",
+                                file_types=[".obj", ".fbx", ".glb", ".gltf", ".vrm"],
+                                type="filepath"
+                            )
+                            step1_seed = gr.Slider(
+                                minimum=1,
+                                maximum=99999,
+                                value=12345,
+                                step=1,
+                                label="Random Seed"
+                            )
+                            step1_btn = gr.Button("Generate Skeleton", variant="secondary")
+                        
+                        with gr.Column():
+                            step1_status = gr.Markdown("Upload a model to start...")
+                            step1_preview = gr.HTML("")
+                            step1_output = gr.File(label="Skeleton File (.fbx)", visible=False)
+                
+                # Step 2: Skinning Generation
+                with gr.Group():
+                    gr.HTML("<h4>Step 2: Skinning Weight Generation</h4>")
+                    with gr.Row():
+                        with gr.Column():
+                            step2_input = gr.File(
+                                label="Skeleton File (from Step 1)",
+                                file_types=[".fbx"],
+                                type="filepath"
+                            )
+                            step2_btn = gr.Button("Generate Skinning Weights", variant="secondary")
+                        
+                        with gr.Column():
+                            step2_status = gr.Markdown("Complete Step 1 first...")
+                            step2_preview = gr.HTML("")
+                            step2_output = gr.File(label="Skinning File (.fbx)", visible=False)
+                
+                # Step 3: Merge Results
+                with gr.Group():
+                    gr.HTML("<h4>Step 3: Merge with Original Model</h4>")
+                    with gr.Row():
+                        with gr.Column():
+                            step3_original = gr.File(
+                                label="Original Model",
+                                file_types=[".obj", ".fbx", ".glb", ".gltf", ".vrm"],
+                                type="filepath"
+                            )
+                            step3_rigged = gr.File(
+                                label="Rigged File (from Step 2)",
+                                file_types=[".fbx"],
+                                type="filepath"
+                            )
+                            step3_btn = gr.Button("Merge Results", variant="secondary")
+                        
+                        with gr.Column():
+                            step3_status = gr.Markdown("Complete previous steps first...")
+                            step3_preview = gr.HTML("")
+                            step3_output = gr.File(label="Final Rigged Model (.glb)", visible=False)
+                
+                # Event handlers for step-by-step
+                step1_btn.click(
+                    fn=demo_instance.generate_skeleton,
+                    inputs=[step1_input, step1_seed],
+                    outputs=[step1_status, step1_output, step1_preview]
+                )
+                
+                step2_btn.click(
+                    fn=demo_instance.generate_skinning,
+                    inputs=[step2_input],
+                    outputs=[step2_status, step2_output, step2_preview]
+                )
+                
+                step3_btn.click(
+                    fn=demo_instance.merge_results,
+                    inputs=[step3_original, step3_rigged],
+                    outputs=[step3_status, step3_output, step3_preview]
+                )
+                
+                # Auto-populate step 2 input when step 1 completes
+                step1_output.change(
+                    fn=lambda x: x,
+                    inputs=[step1_output],
+                    outputs=[step2_input]
+                )
+                
+                # Auto-populate step 3 rigged input when step 2 completes
+                step2_output.change(
+                    fn=lambda x: x,
+                    inputs=[step2_output],
+                    outputs=[step3_rigged]
+                )
         
-    except Exception as e:
-        error_message = f"An unexpected error occurred: {str(e)}"
-        print(error_message)
-        traceback.print_exc()
-        yield None, None, '', error_message, gr.update(interactive=True), gr.update(interactive=False)
-
-def end_process():
-    stream.input_queue.push('end')
-
-
-quick_prompts = [
-    'The girl dances gracefully, with clear movements, full of charm.',
-    'A character doing some simple body movements.',
-]
-quick_prompts = [[x] for x in quick_prompts]
-
-
-css = make_progress_bar_css()
-with gr.Blocks(css=css) as app:
-    gr.Markdown('''
-    # [FramePack](https://github.com/lllyasviel/FramePack)
-        
-    This implementation is based on the `demo_gradio.py` that [Lvmin Zhang](https://github.com/lllyasviel) provided
+        # Footer
+        gr.HTML("""
+        <div style="text-align: center; margin-top: 2em; padding: 1em; border-radius: 8px;">
+            <p style="color: #6b7280;">
+                🔬 <strong>UniRig</strong> - Research by Tsinghua University & Tripo<br>
+                📄 <a href="https://arxiv.org/abs/2504.12451" target="_blank">Paper</a> | 
+                🏠 <a href="https://zjp-shadow.github.io/works/UniRig/" target="_blank">Project Page</a> | 
+                🤗 <a href="https://huggingface.co/VAST-AI/UniRig" target="_blank">Models</a>
+            </p>
+            <p style="color: #9ca3af; font-size: 0.9em;">
+                ⚡ Powered by PyTorch & Gradio | 🎯 GPU recommended for optimal performance
+            </p>
+        </div>
+        """)
     
-    ### How to use:
-    1. **Upload an image** - Best results with clear, well-lit portraits
-    2. **Enter a prompt** describing the movement (or select from quick examples)
-    3. **Click "Start Generation"** and wait for the video to be created
+    return interface
+
+
+def main():
+    """Main function to launch the Gradio demo."""
     
-    Generation takes a few minutes. The video is created in reverse order, so the beginning of the animation will appear last.
+    # Create and launch the interface
+    demo = create_demo_interface()
     
-    *For high-quality results, use simple and clear descriptions of movements.*
-    ''')
-    with gr.Row():
-        with gr.Column():
-            input_image = gr.Image(sources='upload', type="numpy", label="Image", height=320)
-            prompt = gr.Textbox(label="Prompt", value='')
-            example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
-            example_quick_prompts.click(lambda x: x[0], inputs=[example_quick_prompts], outputs=prompt, show_progress=False, queue=False)
+    # Launch configuration
+    demo.queue().launch()
 
-            with gr.Row():
-                start_button = gr.Button(value="Start Generation")
-                end_button = gr.Button(value="End Generation", interactive=False)
-
-            with gr.Group():
-                use_teacache = gr.Checkbox(label='Use TeaCache', value=True, info='Faster speed, but often makes hands and fingers slightly worse.')
-
-                n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=False)  # Not used
-                with gr.Row(equal_height=True):
-                    seed = gr.Number(label="Seed", value=31337, precision=0, scale=4)
-                    random_seed_button = gr.Button(value="🔁", variant="primary", scale=1)
-                    random_seed_button.click(lambda: int(torch.randint(0, 2**32 - 1, (1,)).item()), inputs=[], outputs=seed, show_progress=False, queue=False)
-
-                total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=5, step=0.1)
-                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=9, step=1, visible=False)  # Should not change
-                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1, info='Changing this value is not recommended.')
-
-                cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=1.0, step=0.01, visible=False)  # Should not change
-                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=10.0, step=0.01, info='Changing this value is not recommended.')
-                rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
-
-                gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=6, maximum=128, value=6, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
-
-        with gr.Column():
-            preview_image = gr.Image(label="Next Latents", height=200, visible=False)
-            result_video = gr.Video(label="Finished Frames", autoplay=True, show_share_button=False, height=512, loop=True)
-            gr.Markdown('Note that the ending actions will be generated before the starting actions due to the inverted sampling. If the starting action is not in the video, you just need to wait, and it will be generated later.')
-            progress_desc = gr.Markdown('', elem_classes='no-generating-animation')
-            progress_bar = gr.HTML('', elem_classes='no-generating-animation')
-    ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache]
-    start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
-    end_button.click(fn=end_process)
 
 if __name__ == "__main__":
-    app.queue().launch(share=True, ssr_mode=True)
+    main()

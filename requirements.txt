@@ -21,4 +21,4 @@ torch_scatter
 torch_cluster
 spconv-cu121
 pyyaml
-gradio-litmodel3d
+spaces
