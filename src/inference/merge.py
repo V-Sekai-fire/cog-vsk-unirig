@@ -262,7 +262,11 @@ def make_armature(
     
     argsorted = np.argsort(-skin, axis=1)
     vertex_group_reweight = skin[np.arange(skin.shape[0])[..., None], argsorted]
-    vertex_group_reweight = vertex_group_reweight / vertex_group_reweight[..., :group_per_vertex].sum(axis=1)[...,None]
+    # Handle division by zero and limit to group_per_vertex
+    max_groups = min(group_per_vertex, vertex_group_reweight.shape[1])
+    vertex_group_sum = vertex_group_reweight[..., :max_groups].sum(axis=1)[..., None]
+    vertex_group_sum = np.where(vertex_group_sum == 0, 1.0, vertex_group_sum)  # Avoid division by zero
+    vertex_group_reweight = vertex_group_reweight / vertex_group_sum
     vertex_group_reweight = np.nan_to_num(vertex_group_reweight)
     tree = cKDTree(vertices)
     for ob in objects:
@@ -286,7 +290,9 @@ def make_armature(
         _, index = tree.query(n_vertices)
 
         for v, co in enumerate(tqdm(n_vertices)):
-            for ii in range(group_per_vertex):
+            # Ensure we don't access more columns than available in argsorted
+            max_groups = min(group_per_vertex, argsorted.shape[1])
+            for ii in range(max_groups):
                 i = argsorted[index[v], ii]
                 if i >= len(names):
                     continue

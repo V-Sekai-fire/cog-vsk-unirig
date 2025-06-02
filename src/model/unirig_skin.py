@@ -356,7 +356,7 @@ class UniRigSkin(ModelSpec):
             ptv3_input = {
                 'coord': vertices.reshape(-1, 3),
                 'feat': feat.reshape(-1, 9),
-                'offset': torch.tensor(batch['offset']),
+                'offset': batch['offset'].detach().clone(),
                 'grid_size': self.grid_size,
             }
             if not self.training:
@@ -420,7 +420,7 @@ class UniRigSkin(ModelSpec):
                 input_features = attn_weight[i, :, :num_bones[i], :].reshape(-1, attn_weight.shape[-1])
                 
                 pred = self.skinweight_pred(input_features).reshape(cur_N, num_bones[i])
-                skin_pred[i, :, :num_bones[i]] = F.softmax(pred)
+                skin_pred[i, :, :num_bones[i]] = F.softmax(pred, dim=-1)
             skin_pred_list.append(skin_pred)
         skin_pred_list = torch.cat(skin_pred_list, dim=1)
         for i in range(B):
@@ -437,4 +437,5 @@ class UniRigSkin(ModelSpec):
             outputs = []
             for i in range(skin_pred.shape[0]):
                 outputs.append(skin_pred[i, :, :num_bones[i]])
+            
             return outputs

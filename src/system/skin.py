@@ -118,7 +118,7 @@ class SkinWriter(BasePredictionWriter):
             J = num_bones[id]
             F = num_faces[id]
             o_vertices = vertices[id, :N]
-
+            
             _parents = parents_list[id]
             parents = []
             for i in range(J):
@@ -156,36 +156,34 @@ class SkinWriter(BasePredictionWriter):
             raw_data = RawSkin(skin=skin_pred, vertices=sampled_vertices[id], joints=joints[id, :J])
             if self.export_npz is not None:
                 raw_data.save(path=make_path(self.export_npz, 'npz'))
+
             if self.export_fbx is not None:
-                try:
-                    exporter = Exporter()
-                    names = RawData.load(path=os.path.join(paths[id], data_names[id])).names
-                    if names is None:
-                        names = [f"bone_{i}" for i in range(J)]
-                    if self.user_mode:
-                        if self.output_name is not None:
-                            path = self.output_name
-                        else:
-                            path = make_path(self.save_name, 'fbx', trim=True)
+                exporter = Exporter()
+                names = RawData.load(path=os.path.join(paths[id], data_names[id])).names
+                if names is None:
+                    names = [f"bone_{i}" for i in range(J)]
+                if self.user_mode:
+                    if self.output_name is not None:
+                        path = self.output_name
                     else:
-                        path = make_path(self.export_fbx, 'fbx')
-                    exporter._export_fbx(
-                        path=path,
-                        vertices=o_vertices,
-                        joints=joints[id, :J],
-                        skin=skin_resampled,
-                        parents=parents,
-                        names=names,
-                        faces=faces[id, :F],
-                        group_per_vertex=4,
-                        tails=tails[id, :J],
-                        use_extrude_bone=False,
-                        use_connect_unique_child=False,
-                        # do_not_normalize=True,
-                    )
-                except Exception as e:
-                    print(str(e))
-    
+                        path = make_path(self.save_name, 'fbx', trim=True)
+                else:
+                    path = make_path(self.export_fbx, 'fbx')
+                exporter._export_fbx(
+                    path=path,
+                    vertices=o_vertices,
+                    joints=joints[id, :J],
+                    skin=skin_resampled,
+                    parents=parents,
+                    names=names,
+                    faces=faces[id, :F],
+                    group_per_vertex=4,
+                    tails=tails[id, :J],
+                    use_extrude_bone=False,
+                    use_connect_unique_child=False,
+                    # do_not_normalize=True,
+                )
+
     def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices):
         self._epoch += 1
 

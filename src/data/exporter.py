@@ -290,11 +290,15 @@ class Exporter():
         vertex_group_reweight = skin[np.arange(skin.shape[0])[..., None], argsorted]
         if group_per_vertex == -1:
             group_per_vertex = vertex_group_reweight.shape[-1]
+        # Ensure we don't access more columns than available
+        max_groups = min(group_per_vertex, argsorted.shape[1])
         if not do_not_normalize:
-            vertex_group_reweight = vertex_group_reweight / vertex_group_reweight[..., :group_per_vertex].sum(axis=1)[...,None]
+            vertex_group_sum = vertex_group_reweight[..., :max_groups].sum(axis=1)[..., None]
+            vertex_group_sum = np.where(vertex_group_sum == 0, 1.0, vertex_group_sum)  # Avoid division by zero
+            vertex_group_reweight = vertex_group_reweight / vertex_group_sum
 
         for v, w in enumerate(skin):
-            for ii in range(group_per_vertex):
+            for ii in range(max_groups):
                 i = argsorted[v, ii]
                 if i >= J:
                     continue

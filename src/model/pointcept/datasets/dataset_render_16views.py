@@ -387,13 +387,17 @@ class SAMPart3DDataset16Views(Dataset):
             if per_pixel_index.shape[-1] == 1:
                 per_pixel_mask = per_pixel_index.squeeze()
             else:
+                # Clamp random_index to valid range to prevent out of bounds error
+                random_index_clamped = torch.clamp(random_index.unsqueeze(-1), 0, per_pixel_index.shape[1] - 1)
                 per_pixel_mask = torch.gather(
-                    per_pixel_index, 1, random_index.unsqueeze(-1)
+                    per_pixel_index, 1, random_index_clamped
                 ).squeeze()
+                # Clamp the previous index to valid range as well
+                prev_index_clamped = torch.clamp(random_index.unsqueeze(-1) - 1, 0, per_pixel_index.shape[1] - 1)
                 per_pixel_mask_ = torch.gather(
                     per_pixel_index,
                     1,
-                    torch.max(random_index.unsqueeze(-1) - 1, torch.Tensor([0]).int()),
+                    prev_index_clamped,
                 ).squeeze()
 
             mask_id[i : i + npximg] = per_pixel_mask.to(self.device)
