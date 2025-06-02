@@ -1,19 +1,32 @@
 import gradio as gr
 import tempfile
 import os
-import sys
 import shutil
 import subprocess
 import traceback
 from pathlib import Path
 from typing import Optional, Tuple, List
 import spaces
+import torch
 
 import subprocess
 subprocess.run('pip install flash-attn --no-build-isolation', env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"}, shell=True)
 
-# Add the current directory to the path so we can import UniRig modules
-sys.path.insert(0, str(Path(__file__).parent))
+# Get the PyTorch and CUDA versions
+torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
+cuda_version = torch.version.cuda
+
+# Format CUDA version to match the URL convention (e.g., "cu118" for CUDA 11.8)
+if cuda_version:
+    cuda_version = f"cu{cuda_version.replace('.', '')}"
+else:
+    cuda_version = "cpu"  # Fallback in case CUDA is not available
+
+spconv_version = f"-{cuda_version}" if cuda_version != "cpu" else ""
+
+subprocess.run(f'pip install spconv{spconv_version}', shell=True)
+subprocess.run(f'pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-{torch_version}+{cuda_version}.html --no-cache-dir', shell=True)
+
 
 import trimesh
 import yaml
@@ -88,7 +101,7 @@ class UniRigDemo:
     
     def generate_skeleton(self, input_file: str, seed: int = 12345) -> Tuple[str, str, str]:
         """
-        Generate skeleton for the input 3D model.
+        OPERATION 1: Generate skeleton for the input 3D model using Python
         
         Args:
             input_file: Path to the input 3D model file
@@ -97,57 +110,35 @@ class UniRigDemo:
         Returns:
             Tuple of (status_message, output_file_path, preview_info)
         """
-        try:
-            # Validate input
-            if not self.validate_input_file(input_file):
-                return "Error: Invalid or unsupported file format. Supported: " + ", ".join(self.supported_formats), "", ""
-            
-            # Create working directory
-            work_dir = os.path.join(self.temp_dir, f"skeleton_{seed}")
-            os.makedirs(work_dir, exist_ok=True)
-            
-            # Copy input file to work directory
-            input_name = Path(input_file).name
-            work_input = os.path.join(work_dir, input_name)
-            shutil.copy2(input_file, work_input)
-            
-            # Generate skeleton using the launch script
-            output_file = os.path.join(work_dir, f"{Path(input_name).stem}_skeleton.fbx")
-            
-            skeleton_cmd = [
-                'bash', 'launch/inference/generate_skeleton.sh',
-                '--input', work_input,
-                '--output', output_file,
-                '--seed', str(seed)
-            ]
-            
-            # Run skeleton generation
-            result = subprocess.run(
-                skeleton_cmd,
-                cwd=str(Path(__file__).parent),
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                return f"Error: Skeleton generation failed: {result.stderr}", "", ""
-            
-            if not os.path.exists(output_file):
-                return "Error: Skeleton file was not generated", "", ""
-            
-            # Generate preview information
-            preview_info = self.generate_model_preview(output_file)
-            
-            return "✅ Skeleton generated successfully!", output_file, preview_info
-            
-        except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            traceback.print_exc()
-            return error_msg, "", ""
+        # Validate input
+        if not self.validate_input_file(input_file):
+            return "Error: Invalid or unsupported file format. Supported: " + ", ".join(self.supported_formats), "", ""
+        
+        # Create working directory
+        work_dir = os.path.join(self.temp_dir, f"skeleton_{seed}")
+        os.makedirs(work_dir, exist_ok=True)
+        
+        # Copy input file to work directory
+        input_name = Path(input_file).name
+        work_input = os.path.join(work_dir, input_name)
+        shutil.copy2(input_file, work_input)
+        
+        # Generate skeleton using Python (replaces bash script)
+        output_file = os.path.join(work_dir, f"{Path(input_name).stem}_skeleton.fbx")
+        
+        self.run_skeleton_inference_python(work_input, output_file, seed)
+        
+        if not os.path.exists(output_file):
+            return "Error: Skeleton file was not generated", "", ""
+        
+        # Generate preview information
+        preview_info = self.generate_model_preview(output_file)
+        
+        return "✅ Skeleton generated successfully!", output_file, preview_info
     
     def generate_skinning(self, skeleton_file: str) -> Tuple[str, str, str]:
         """
-        Generate skinning weights for the skeleton.
+        OPERATION 2: Generate skinning weights for the skeleton using Python functions.
         
         Args:
             skeleton_file: Path to the skeleton file (from skeleton generation step)
@@ -155,48 +146,32 @@ class UniRigDemo:
         Returns:
             Tuple of (status_message, output_file_path, preview_info)
         """
+        if not skeleton_file or not os.path.exists(skeleton_file):
+            return "Error: No skeleton file provided or file doesn't exist", "", ""
+        
+        # Create output directory
+        work_dir = Path(skeleton_file).parent
+        output_file = os.path.join(work_dir, f"{Path(skeleton_file).stem}_skin.fbx")
+        
+        # Run skinning generation using Python function
         try:
-            if not skeleton_file or not os.path.exists(skeleton_file):
-                return "Error: No skeleton file provided or file doesn't exist", "", ""
-            
-            # Create output directory
-            work_dir = Path(skeleton_file).parent
-            output_file = os.path.join(work_dir, f"{Path(skeleton_file).stem}_skin.fbx")
-            
-            # Generate skinning using the launch script
-            skin_cmd = [
-                'bash', 'launch/inference/generate_skin.sh',
-                '--input', skeleton_file,
-                '--output', output_file
-            ]
-            
-            # Run skinning generation
-            result = subprocess.run(
-                skin_cmd,
-                cwd=str(Path(__file__).parent),
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                return f"Error: Skinning generation failed: {result.stderr}", "", ""
-            
-            if not os.path.exists(output_file):
-                return "Error: Skinning file was not generated", "", ""
-            
-            # Generate preview information
-            preview_info = self.generate_model_preview(output_file)
-            
-            return "✅ Skinning weights generated successfully!", output_file, preview_info
-            
+            self.run_skin_inference_python(skeleton_file, output_file)
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
+            error_msg = f"Error: Skinning generation failed: {str(e)}"
             traceback.print_exc()
             return error_msg, "", ""
+        
+        if not os.path.exists(output_file):
+            return "Error: Skinning file was not generated", "", ""
+        
+        # Generate preview information
+        preview_info = self.generate_model_preview(output_file)
+        
+        return "✅ Skinning weights generated successfully!", output_file, preview_info
     
     def merge_results(self, original_file: str, rigged_file: str) -> Tuple[str, str, str]:
         """
-        Merge the rigged skeleton/skin with the original model.
+        OPERATION 3: Merge the rigged skeleton/skin with the original model using Python functions.
         
         Args:
             original_file: Path to the original 3D model
@@ -205,48 +180,31 @@ class UniRigDemo:
         Returns:
             Tuple of (status_message, output_file_path, preview_info)
         """
+        if not original_file or not os.path.exists(original_file):
+            return "Error: Original file not provided or doesn't exist", "", ""
+        
+        if not rigged_file or not os.path.exists(rigged_file):
+            return "Error: Rigged file not provided or doesn't exist", "", ""
+        
+        # Create output file
+        work_dir = Path(rigged_file).parent
+        output_file = os.path.join(work_dir, f"{Path(original_file).stem}_rigged.glb")
+        
+        # Run merge using Python function
         try:
-            if not original_file or not os.path.exists(original_file):
-                return "Error: Original file not provided or doesn't exist", "", ""
-            
-            if not rigged_file or not os.path.exists(rigged_file):
-                return "Error: Rigged file not provided or doesn't exist", "", ""
-            
-            # Create output file
-            work_dir = Path(rigged_file).parent
-            output_file = os.path.join(work_dir, f"{Path(original_file).stem}_rigged.glb")
-            
-            # Merge using the launch script
-            merge_cmd = [
-                'bash', 'launch/inference/merge.sh',
-                '--source', rigged_file,
-                '--target', original_file,
-                '--output', output_file
-            ]
-            
-            # Run merge
-            result = subprocess.run(
-                merge_cmd,
-                cwd=str(Path(__file__).parent),
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                return f"Error: Merge failed: {result.stderr}", "", ""
-            
-            if not os.path.exists(output_file):
-                return "Error: Merged file was not generated", "", ""
-            
-            # Generate preview information
-            preview_info = self.generate_model_preview(output_file)
-            
-            return "✅ Model rigging completed successfully!", output_file, preview_info
-            
+            self.merge_results_python(rigged_file, original_file, output_file)
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
+            error_msg = f"Error: Merge failed: {str(e)}"
             traceback.print_exc()
             return error_msg, "", ""
+        
+        if not os.path.exists(output_file):
+            return "Error: Merged file was not generated", "", ""
+        
+        # Generate preview information
+        preview_info = self.generate_model_preview(output_file)
+        
+        return "✅ Model rigging completed successfully!", output_file, preview_info
     
     def generate_model_preview(self, model_path: str) -> str:
         """
@@ -338,7 +296,211 @@ class UniRigDemo:
             return error_msg, "", "", "", ""
 
 
-def create_demo_interface():
+    # ==========================================
+    # CORE PYTHON FUNCTIONS (NO BASH SCRIPTS)
+    # ==========================================
+    
+    def extract_mesh_python(self, input_file: str, output_dir: str) -> str:
+        """
+        Extract mesh data from 3D model using Python (replaces extract.sh)
+        Returns path to generated .npz file
+        """
+        # Import required modules
+        from src.data.extract import get_files
+        
+        # Create extraction parameters
+        files = get_files(
+            data_name="raw_data.npz",
+            inputs=input_file,
+            input_dataset_dir=None,
+            output_dataset_dir=output_dir,
+            force_override=True,
+            warning=False,
+        )
+        
+        # Get the npz file path
+        if files:
+            return files[0][1]  # Return the npz file path
+        
+        raise RuntimeError("No .npz file generated during extraction")
+    
+    def run_skeleton_inference_python(self, input_file: str, output_file: str, seed: int = 12345) -> str:
+        """
+        Run skeleton inference using Python (replaces skeleton part of generate_skeleton.sh)
+        Returns path to skeleton FBX file
+        """
+        import lightning as L
+        from box import Box
+        from src.data.dataset import UniRigDatasetModule, DatasetConfig
+        from src.data.datapath import Datapath
+        from src.data.transform import TransformConfig
+        from src.tokenizer.spec import TokenizerConfig
+        from src.tokenizer.parse import get_tokenizer
+        from src.model.parse import get_model
+        from src.system.parse import get_system, get_writer
+        from src.inference.download import download
+        
+        # Set random seed
+        L.seed_everything(seed, workers=True)
+        
+        # Load task configuration
+        task_config_path = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
+        with open(task_config_path, 'r') as f:
+            task = Box(yaml.safe_load(f))
+        
+        # Create temporary npz directory
+        npz_dir = os.path.join(os.path.dirname(output_file), "tmp")
+        os.makedirs(npz_dir, exist_ok=True)
+        
+        # Extract mesh data
+        npz_file = self.extract_mesh_python(input_file, npz_dir)
+        
+        # Setup datapath
+        datapath = Datapath(files=[npz_file], cls=None)
+        
+        # Load configurations
+        data_config = Box(yaml.safe_load(open("configs/data/quick_inference.yaml", 'r')))
+        transform_config = Box(yaml.safe_load(open("configs/transform/inference_ar_transform.yaml", 'r')))
+        
+        # Get tokenizer
+        tokenizer_config = TokenizerConfig.parse(config=Box(yaml.safe_load(open("configs/tokenizer/tokenizer_parts_articulationxl_256.yaml", 'r'))))
+        tokenizer = get_tokenizer(config=tokenizer_config)
+        
+        # Get model
+        model_config = Box(yaml.safe_load(open("configs/model/unirig_ar_350m_1024_81920_float32.yaml", 'r')))
+        model = get_model(tokenizer=tokenizer, **model_config)
+        
+        # Setup datasets and transforms
+        predict_dataset_config = DatasetConfig.parse(config=data_config.predict_dataset_config).split_by_cls()
+        predict_transform_config = TransformConfig.parse(config=transform_config.predict_transform_config)
+        
+        # Create data module
+        data = UniRigDatasetModule(
+            process_fn=model._process_fn,
+            predict_dataset_config=predict_dataset_config,
+            predict_transform_config=predict_transform_config,
+            tokenizer_config=tokenizer_config,
+            debug=False,
+            data_name="raw_data.npz",
+            datapath=datapath,
+            cls=None,
+        )
+        
+        # Setup callbacks and writer
+        callbacks = []
+        writer_config = task.writer.copy()
+        writer_config['npz_dir'] = npz_dir
+        writer_config['output_dir'] = os.path.dirname(output_file)
+        writer_config['output_name'] = output_file
+        writer_config['user_mode'] = True
+        callbacks.append(get_writer(**writer_config, order_config=predict_transform_config.order_config))
+        
+        # Get system
+        system_config = Box(yaml.safe_load(open("configs/system/ar_inference_articulationxl.yaml", 'r')))
+        system = get_system(**system_config, model=model, steps_per_epoch=1)
+        
+        # Setup trainer
+        trainer_config = task.trainer
+        resume_from_checkpoint = download(task.resume_from_checkpoint)
+        
+        trainer = L.Trainer(callbacks=callbacks, logger=None, **trainer_config)
+        
+        # Run prediction
+        trainer.predict(system, datamodule=data, ckpt_path=resume_from_checkpoint, return_predictions=False)
+        
+        return output_file
+    
+    def run_skin_inference_python(self, skeleton_file: str, output_file: str) -> str:
+        """
+        Run skin inference using Python (replaces skin part of generate_skin.sh)
+        Returns path to skin FBX file
+        """
+        import lightning as L
+        from box import Box
+        from src.data.dataset import UniRigDatasetModule, DatasetConfig
+        from src.data.datapath import Datapath
+        from src.data.transform import TransformConfig
+        from src.model.parse import get_model
+        from src.system.parse import get_system, get_writer
+        from src.inference.download import download
+        
+        # Load task configuration
+        task_config_path = "configs/task/quick_inference_unirig_skin.yaml"
+        with open(task_config_path, 'r') as f:
+            task = Box(yaml.safe_load(f))
+        
+        # Find the npz directory (should contain predict_skeleton.npz)
+        npz_dir = os.path.join(os.path.dirname(skeleton_file), "tmp")
+        skeleton_npz = os.path.join(npz_dir, "predict_skeleton.npz")
+        
+        if not os.path.exists(skeleton_npz):
+            raise RuntimeError(f"Skeleton NPZ file not found: {skeleton_npz}")
+        
+        # Setup datapath
+        datapath = Datapath(files=[skeleton_npz], cls=None)
+        
+        # Load configurations
+        data_config = Box(yaml.safe_load(open("configs/data/quick_inference.yaml", 'r')))
+        transform_config = Box(yaml.safe_load(open("configs/transform/inference_skin_transform.yaml", 'r')))
+        
+        # Get model
+        model_config = Box(yaml.safe_load(open("configs/model/unirig_skin.yaml", 'r')))
+        model = get_model(tokenizer=None, **model_config)
+        
+        # Setup datasets and transforms
+        predict_dataset_config = DatasetConfig.parse(config=data_config.predict_dataset_config).split_by_cls()
+        predict_transform_config = TransformConfig.parse(config=transform_config.predict_transform_config)
+        
+        # Create data module
+        data = UniRigDatasetModule(
+            process_fn=model._process_fn,
+            predict_dataset_config=predict_dataset_config,
+            predict_transform_config=predict_transform_config,
+            tokenizer_config=None,
+            debug=False,
+            data_name="predict_skeleton.npz",
+            datapath=datapath,
+            cls=None,
+        )
+        
+        # Setup callbacks and writer
+        callbacks = []
+        writer_config = task.writer.copy()
+        writer_config['npz_dir'] = npz_dir
+        writer_config['output_dir'] = os.path.dirname(output_file)
+        writer_config['output_name'] = output_file
+        writer_config['user_mode'] = True
+        callbacks.append(get_writer(**writer_config, order_config=predict_transform_config.order_config))
+        
+        # Get system
+        system_config = Box(yaml.safe_load(open("configs/system/skin.yaml", 'r')))
+        system = get_system(**system_config, model=model, steps_per_epoch=1)
+        
+        # Setup trainer
+        trainer_config = task.trainer
+        resume_from_checkpoint = download(task.resume_from_checkpoint)
+        
+        trainer = L.Trainer(callbacks=callbacks, logger=None, **trainer_config)
+        
+        # Run prediction
+        trainer.predict(system, datamodule=data, ckpt_path=resume_from_checkpoint, return_predictions=False)
+        
+        return output_file
+    
+    def merge_results_python(self, source_file: str, target_file: str, output_file: str) -> str:
+        """
+        Merge results using Python (replaces merge.sh)
+        Returns path to merged file
+        """
+        from src.inference.merge import transfer
+        
+        # Use the transfer function directly
+        transfer(source=source_file, target=target_file, output=output_file, add_root=False)
+        
+        return output_file
+
+
+def create_app():
     """Create and configure the Gradio interface."""
     
     demo_instance = UniRigDemo()
@@ -374,9 +536,10 @@ def create_demo_interface():
             with gr.Tab("🚀 Complete Pipeline", elem_id="pipeline-tab"):                
                 with gr.Row():
                     with gr.Column(scale=1):
-                        pipeline_input = gr.Model3D(
+                        pipeline_input = gr.File(
                             label="Upload 3D Model",
-                            display_mode="solid",
+                            file_types=[".obj", ".fbx", ".glb", ".gltf", ".vrm"],
+                            type="filepath",
                         )
                         pipeline_seed = gr.Slider(
                             minimum=1,
@@ -523,16 +686,9 @@ def create_demo_interface():
     
     return interface
 
-
-def main():
-    """Main function to launch the Gradio demo."""
-    
+if __name__ == "__main__":
     # Create and launch the interface
-    demo = create_demo_interface()
+    app = create_app()
     
     # Launch configuration
-    demo.queue().launch()
-
-
-if __name__ == "__main__":
-    main()
+    app.queue().launch()
