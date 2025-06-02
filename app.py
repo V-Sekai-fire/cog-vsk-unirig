@@ -99,6 +99,7 @@ class UniRigDemo:
         except Exception as e:
             raise RuntimeError(f"Preprocessing failed: {str(e)}")
     
+    @spaces.GPU()
     def generate_skeleton(self, input_file: str, seed: int = 12345) -> Tuple[str, str, str]:
         """
         OPERATION 1: Generate skeleton for the input 3D model using Python
@@ -135,7 +136,8 @@ class UniRigDemo:
         preview_info = self.generate_model_preview(output_file)
         
         return "✅ Skeleton generated successfully!", output_file, preview_info
-    
+
+    @spaces.GPU()
     def generate_skinning(self, skeleton_file: str) -> Tuple[str, str, str]:
         """
         OPERATION 2: Generate skinning weights for the skeleton using Python functions.
