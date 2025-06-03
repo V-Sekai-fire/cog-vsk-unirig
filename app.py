@@ -489,9 +489,11 @@ def create_app():
                         scale=4,
                     )
                     random_btn = gr.Button("🔄 Random Seed", variant="secondary", scale=1)
+                
                 pipeline_btn = gr.Button("🎯 Start Complete Pipeline", variant="primary", size="lg")
             
-            pipeline_skeleton_out = gr.File(label="Final Rigged Model")
+            with gr.Column(scale=1):
+                pipeline_skeleton_out = gr.File(label="Final Rigged Model")
         
         random_btn.click(
             fn=lambda: int(torch.randint(0, 100000, (1,)).item()),
