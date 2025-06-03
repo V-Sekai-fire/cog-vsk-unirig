@@ -1,4 +1,3 @@
-torch==2.6.0+cu126
 transformers
 python-box
 einops
@@ -14,6 +13,7 @@ open3d
 pyrender
 huggingface_hub
 numpy==1.26.4
+torch==2.6.0+cu126
 scipy
 matplotlib
 plotly
