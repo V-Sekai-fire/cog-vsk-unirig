@@ -11,7 +11,7 @@ import spaces
 import torch
 import yaml
 
-subprocess.run('pip install flash-attn --no-build-isolation', env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"}, shell=True)
+subprocess.run('pip install flash-attn --no-build-isolation', shell=True)
 
 
 # Get the PyTorch and CUDA versions
