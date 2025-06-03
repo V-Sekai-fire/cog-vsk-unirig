@@ -50,7 +50,6 @@ class UniRigDemo:
         file_ext = Path(file_path).suffix.lower()
         return file_ext in self.supported_formats
     
-    @spaces.GPU()
     def generate_skeleton(self, input_file: str, seed: int = 12345) -> Tuple[str, str, str]:
         """
         OPERATION 1: Generate skeleton for the input 3D model using Python
@@ -130,6 +129,7 @@ class UniRigDemo:
         
         return "✅ Model rigging completed successfully!", str(output_file_abs), preview_info
 
+    @spaces.GPU()
     def complete_pipeline(self, input_file: str, seed: int = 12345) -> Tuple[str, str, str, str, str]:
         """
         Run the complete rigging pipeline: skeleton generation → skinning → merge.
