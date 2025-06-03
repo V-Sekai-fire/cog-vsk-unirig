@@ -168,7 +168,7 @@ class UniRigDemo:
         final_file = input_model_dir / f"{file_stem}_rigged.glb"
         self.merge_results_python(output_skin_file, input_file, final_file)
 
-        return str(final_file)
+        return str(final_file), [str(output_skeleton_file), str(output_skin_file), str(final_file)]
         
     def extract_mesh_python(self, input_file: str, output_dir: str) -> str:
         """
@@ -462,25 +462,21 @@ def create_app():
         </div>
         """)
         
-        # Information Section
-        gr.HTML("""
-        <h3>📚 About UniRig</h3>
-        <p>UniRig is a state-of-the-art framework that automates the complex process of 3D model rigging:</p>
-        <ul>
-            <li><strong>Skeleton Generation:</strong> AI predicts optimal bone structures</li>
-            <li><strong>Skinning Weights:</strong> Automatic vertex-to-bone weight assignment</li>
-            <li><strong>Universal Support:</strong> Works with humans, animals, and objects</li>
-        </ul>
-        <p><strong>Supported formats:</strong> .obj, .fbx, .glb</p>
+        # Usage Instructions Section
+        gr.Markdown("""
+        ## 📋 How to Use ?
+        1. **Upload your 3D model** - Drop your .obj, .fbx, or .glb file in the upload area
+        2. **Set random seed** (optional) - Use the same seed for reproducible results
+        3. **Click "Start Complete Pipeline"** - The AI will automatically rig your model
+        4. **Download results** - `_skeleton.fbx` is the base model with skeleton, `_skin.fbx` is the base model with armature/skeleton and skinning weights, and `_rigged.*` is the final rigged model ready for use.
+
+        **Supported File Formats:** .obj, .fbx, .glb
+        **Note:** The process may take a few minutes depending on the model complexity and server load.
         """)
         
         with gr.Row(equal_height=True):
             with gr.Column(scale=1):
-                input_3d_model = gr.File(
-                    label="Upload 3D Model",
-                    file_types=[".obj", ".fbx", ".glb"],
-                    type="filepath",
-                )
+                input_3d_model = gr.Model3D(label="Upload 3D Model")
                 
                 with gr.Row(equal_height=True):
                     seed = gr.Number(
@@ -492,9 +488,10 @@ def create_app():
                 
                 pipeline_btn = gr.Button("🎯 Start Complete Pipeline", variant="primary", size="lg")
             
-            with gr.Column(scale=1):
-                pipeline_skeleton_out = gr.File(label="Final Rigged Model")
-        
+            with gr.Column():
+                pipeline_skeleton_out = gr.Model3D(label="Final Rigged Model", scale=4)
+                files_to_download = gr.Files(label="Download Files", scale=1)
+                   
         random_btn.click(
             fn=lambda: int(torch.randint(0, 100000, (1,)).item()),
             outputs=seed
@@ -503,7 +500,7 @@ def create_app():
         pipeline_btn.click(
             fn=demo_instance.complete_pipeline,
             inputs=[input_3d_model, seed],
-            outputs=[pipeline_skeleton_out]
+            outputs=[pipeline_skeleton_out, files_to_download]
         )
         
         # Footer
