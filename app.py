@@ -11,9 +11,6 @@ import spaces
 import torch
 import yaml
 
-subprocess.run('pip install flash-attn --no-build-isolation', shell=True)
-
-
 # Get the PyTorch and CUDA versions
 torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
 cuda_version = torch.version.cuda
@@ -141,6 +138,8 @@ class UniRigDemo:
         Returns:
             Tuple of status messages and file paths for each step
         """
+        subprocess.run('pip install flash-attn --no-build-isolation', shell=True)
+
         # Validate input file
         if not self.validate_input_file(input_file):
             raise gr.Error(f"Error: Invalid or unsupported file format. Supported formats: {', '.join(self.supported_formats)}")
