@@ -172,3 +172,14 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# 3D model files
+*.glb
+*.fbx
+*.obj
+*.npz
+
+# residual files
+.gradio/
+lightning_logs/
+logs/

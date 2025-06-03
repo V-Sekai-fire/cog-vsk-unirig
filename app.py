@@ -1,20 +1,23 @@
-import gradio as gr
-import tempfile
-import os
 import shutil
 import subprocess
+import time
 import traceback
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Tuple
+
+import gradio as gr
+import lightning as L
 import spaces
 import torch
+import yaml
 
-import subprocess
 subprocess.run('pip install flash-attn --no-build-isolation', env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"}, shell=True)
+
 
 # Get the PyTorch and CUDA versions
 torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
 cuda_version = torch.version.cuda
+spconv_version = "-cu121" if cuda_version else "" 
 
 # Format CUDA version to match the URL convention (e.g., "cu118" for CUDA 11.8)
 if cuda_version:
@@ -22,82 +25,30 @@ if cuda_version:
 else:
     cuda_version = "cpu"  # Fallback in case CUDA is not available
 
-spconv_version = f"-{cuda_version}" if cuda_version != "cpu" else ""
 
 subprocess.run(f'pip install spconv{spconv_version}', shell=True)
 subprocess.run(f'pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-{torch_version}+{cuda_version}.html --no-cache-dir', shell=True)
 
 
-import trimesh
-import yaml
-
 class UniRigDemo:
     """Main class for the UniRig Gradio demo application."""
     
     def __init__(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.results_dir = os.path.join(self.temp_dir, "results")
-        os.makedirs(self.results_dir, exist_ok=True)
+        # Create temp directory in current directory instead of system temp
+        base_dir = Path(__file__).parent
+        self.temp_dir = base_dir / "tmp"
+        self.temp_dir.mkdir(exist_ok=True)
         
         # Supported file formats
-        self.supported_formats = ['.obj', '.fbx', '.glb', '.gltf', '.vrm']
+        self.supported_formats = ['.obj', '.fbx', '.glb']
         
-        # Initialize models (will be loaded on demand)
-        self.skeleton_model = None
-        self.skin_model = None
-        
-    def load_config(self, config_path: str) -> dict:
-        """Load YAML configuration file."""
-        try:
-            with open(config_path, 'r') as f:
-                return yaml.safe_load(f)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load config {config_path}: {str(e)}")
-    
     def validate_input_file(self, file_path: str) -> bool:
         """Validate if the input file format is supported."""
-        if not file_path or not os.path.exists(file_path):
+        if not file_path or not Path(file_path).exists():
             return False
         
         file_ext = Path(file_path).suffix.lower()
         return file_ext in self.supported_formats
-    
-    def preprocess_model(self, input_file: str, output_dir: str) -> str:
-        """
-        Preprocess the 3D model for inference.
-        This extracts mesh data and saves it as .npz format.
-        """
-        try:
-            # Create extraction command
-            extract_cmd = [
-                'python', '-m', 'src.data.extract',
-                '--config', 'configs/data/quick_inference.yaml',
-                '--input', input_file,
-                '--output_dir', output_dir,
-                '--force_override', 'true',
-                '--faces_target_count', '50000'
-            ]
-            
-            # Run extraction
-            result = subprocess.run(
-                extract_cmd, 
-                cwd=str(Path(__file__).parent),
-                capture_output=True, 
-                text=True
-            )
-            
-            if result.returncode != 0:
-                raise RuntimeError(f"Extraction failed: {result.stderr}")
-            
-            # Find the generated .npz file
-            npz_files = list(Path(output_dir).glob("*.npz"))
-            if not npz_files:
-                raise RuntimeError("No .npz file generated during preprocessing")
-            
-            return str(npz_files[0])
-            
-        except Exception as e:
-            raise RuntimeError(f"Preprocessing failed: {str(e)}")
     
     @spaces.GPU()
     def generate_skeleton(self, input_file: str, seed: int = 12345) -> Tuple[str, str, str]:
@@ -116,62 +67,28 @@ class UniRigDemo:
             return "Error: Invalid or unsupported file format. Supported: " + ", ".join(self.supported_formats), "", ""
         
         # Create working directory
-        work_dir = os.path.join(self.temp_dir, f"skeleton_{seed}")
-        os.makedirs(work_dir, exist_ok=True)
-        
-        # Copy input file to work directory
-        input_name = Path(input_file).name
-        work_input = os.path.join(work_dir, input_name)
-        shutil.copy2(input_file, work_input)
+        file_stem = Path(input_file).stem
+        input_model_dir = self.temp_dir / f"{file_stem}_{seed}"
+        input_model_dir.mkdir(exist_ok=True)
+
+        # Copy input file to working directory
+        input_file = Path(input_file)
+        shutil.copy2(input_file, input_model_dir / input_file.name)
+        input_file = input_model_dir / input_file.name
+        print(f"New input file path: {input_file}")
         
         # Generate skeleton using Python (replaces bash script)
-        output_file = os.path.join(work_dir, f"{Path(input_name).stem}_skeleton.fbx")
+        output_file = input_model_dir / f"{file_stem}_skeleton.fbx"
         
-        self.run_skeleton_inference_python(work_input, output_file, seed)
-        
-        if not os.path.exists(output_file):
+        self.run_skeleton_inference_python(input_file, output_file, seed)
+
+        if not output_file.exists():
             return "Error: Skeleton file was not generated", "", ""
         
-        # Generate preview information
-        preview_info = self.generate_model_preview(output_file)
-        
-        return "✅ Skeleton generated successfully!", output_file, preview_info
+        print(f"Generated skeleton at: {output_file}")
+        return str(output_file)
 
-    @spaces.GPU()
-    def generate_skinning(self, skeleton_file: str) -> Tuple[str, str, str]:
-        """
-        OPERATION 2: Generate skinning weights for the skeleton using Python functions.
-        
-        Args:
-            skeleton_file: Path to the skeleton file (from skeleton generation step)
-            
-        Returns:
-            Tuple of (status_message, output_file_path, preview_info)
-        """
-        if not skeleton_file or not os.path.exists(skeleton_file):
-            return "Error: No skeleton file provided or file doesn't exist", "", ""
-        
-        # Create output directory
-        work_dir = Path(skeleton_file).parent
-        output_file = os.path.join(work_dir, f"{Path(skeleton_file).stem}_skin.fbx")
-        
-        # Run skinning generation using Python function
-        try:
-            self.run_skin_inference_python(skeleton_file, output_file)
-        except Exception as e:
-            error_msg = f"Error: Skinning generation failed: {str(e)}"
-            traceback.print_exc()
-            return error_msg, "", ""
-        
-        if not os.path.exists(output_file):
-            return "Error: Skinning file was not generated", "", ""
-        
-        # Generate preview information
-        preview_info = self.generate_model_preview(output_file)
-        
-        return "✅ Skinning weights generated successfully!", output_file, preview_info
-    
-    def merge_results(self, original_file: str, rigged_file: str) -> Tuple[str, str, str]:
+    def merge_results(self, original_file: str, rigged_file: str, output_file) -> str:
         """
         OPERATION 3: Merge the rigged skeleton/skin with the original model using Python functions.
         
@@ -182,78 +99,37 @@ class UniRigDemo:
         Returns:
             Tuple of (status_message, output_file_path, preview_info)
         """
-        if not original_file or not os.path.exists(original_file):
+        if not original_file or not Path(original_file).exists():
             return "Error: Original file not provided or doesn't exist", "", ""
         
-        if not rigged_file or not os.path.exists(rigged_file):
+        if not rigged_file or not Path(rigged_file).exists():
             return "Error: Rigged file not provided or doesn't exist", "", ""
         
         # Create output file
         work_dir = Path(rigged_file).parent
-        output_file = os.path.join(work_dir, f"{Path(original_file).stem}_rigged.glb")
+        output_file = work_dir / f"{Path(original_file).stem}_rigged.glb"
         
         # Run merge using Python function
         try:
-            self.merge_results_python(rigged_file, original_file, output_file)
+            self.merge_results_python(rigged_file, original_file, str(output_file))
         except Exception as e:
             error_msg = f"Error: Merge failed: {str(e)}"
             traceback.print_exc()
             return error_msg, "", ""
         
-        if not os.path.exists(output_file):
+        # Validate that the output file exists and is a file (not a directory)
+        output_file_abs = output_file.resolve()
+        if not output_file_abs.exists():
             return "Error: Merged file was not generated", "", ""
         
+        if not output_file_abs.is_file():
+            return f"Error: Output path is not a valid file: {output_file_abs}", "", ""
+        
         # Generate preview information
-        preview_info = self.generate_model_preview(output_file)
+        preview_info = self.generate_model_preview(str(output_file_abs))
         
-        return "✅ Model rigging completed successfully!", output_file, preview_info
-    
-    def generate_model_preview(self, model_path: str) -> str:
-        """
-        Generate preview information for a 3D model.
-        
-        Args:
-            model_path: Path to the model file
-            
-        Returns:
-            HTML string with model information
-        """
-        try:
-            if not os.path.exists(model_path):
-                return "Model file not found"
-            
-            # Try to load with trimesh for basic info
-            try:
-                mesh = trimesh.load(model_path)
-                if hasattr(mesh, 'vertices'):
-                    vertices_count = len(mesh.vertices)
-                    faces_count = len(mesh.faces) if hasattr(mesh, 'faces') else 0
-                else:
-                    vertices_count = 0
-                    faces_count = 0
-            except Exception:
-                vertices_count = 0
-                faces_count = 0
-            
-            file_size = os.path.getsize(model_path)
-            file_size_mb = file_size / (1024 * 1024)
-            
-            preview_html = f"""
-            <div style="padding: 10px; border: 1px solid #ddd; border-radius: 5px; background-color: #f9f9f9;">
-                <h4>📊 Model Information</h4>
-                <p><strong>File:</strong> {Path(model_path).name}</p>
-                <p><strong>Size:</strong> {file_size_mb:.2f} MB</p>
-                <p><strong>Vertices:</strong> {vertices_count:,}</p>
-                <p><strong>Faces:</strong> {faces_count:,}</p>
-                <p><strong>Format:</strong> {Path(model_path).suffix.upper()}</p>
-            </div>
-            """
-            
-            return preview_html
-            
-        except Exception as e:
-            return f"Error generating preview: {str(e)}"
-    
+        return "✅ Model rigging completed successfully!", str(output_file_abs), preview_info
+
     def complete_pipeline(self, input_file: str, seed: int = 12345) -> Tuple[str, str, str, str, str]:
         """
         Run the complete rigging pipeline: skeleton generation → skinning → merge.
@@ -265,100 +141,114 @@ class UniRigDemo:
         Returns:
             Tuple of status messages and file paths for each step
         """
-        try:
-            # Step 1: Generate skeleton
-            skeleton_status, skeleton_file, skeleton_preview = self.generate_skeleton(input_file, seed)
-            if not skeleton_file:
-                return skeleton_status, "", "", "", ""
-            
-            # Step 2: Generate skinning
-            skin_status, skin_file, skin_preview = self.generate_skinning(skeleton_file)
-            if not skin_file:
-                return f"{skeleton_status}\n{skin_status}", skeleton_file, "", "", ""
-            
-            # Step 3: Merge results
-            merge_status, final_file, final_preview = self.merge_results(input_file, skin_file)
-            
-            # Combine all status messages
-            combined_status = f"""
-            🏗️ **Pipeline Complete!**
-            
-            **Step 1 - Skeleton Generation:** ✅ Complete
-            **Step 2 - Skinning Weights:** ✅ Complete  
-            **Step 3 - Final Merge:** ✅ Complete
-            
-            {merge_status}
-            """
-            
-            return combined_status, skeleton_file, skin_file, final_file, final_preview
-            
-        except Exception as e:
-            error_msg = f"Pipeline Error: {str(e)}"
-            traceback.print_exc()
-            return error_msg, "", "", "", ""
+        # Validate input file
+        if not self.validate_input_file(input_file):
+            raise gr.Error(f"Error: Invalid or unsupported file format. Supported formats: {', '.join(self.supported_formats)}")
+        
+        # Create working directory
+        file_stem = Path(input_file).stem
+        input_model_dir = self.temp_dir / f"{file_stem}_{seed}"
+        input_model_dir.mkdir(exist_ok=True)
 
+        # Copy input file to working directory
+        input_file = Path(input_file)
+        shutil.copy2(input_file, input_model_dir / input_file.name)
+        input_file = input_model_dir / input_file.name
+        print(f"New input file path: {input_file}")
+        
+        # Step 1: Generate skeleton        
+        output_skeleton_file = input_model_dir / f"{file_stem}_skeleton.fbx"
+        self.run_skeleton_inference_python(input_file, output_skeleton_file, seed)        
 
-    # ==========================================
-    # CORE PYTHON FUNCTIONS (NO BASH SCRIPTS)
-    # ==========================================
-    
+        # Step 2: Generate skinning
+        output_skin_file = input_model_dir / f"{file_stem}_skin.fbx"
+        self.run_skin_inference_python(output_skeleton_file, output_skin_file)
+        
+        # Step 3: Merge results
+        final_file = input_model_dir / f"{file_stem}_rigged.glb"
+        self.merge_results_python(output_skin_file, input_file, final_file)
+
+        return str(final_file)
+        
     def extract_mesh_python(self, input_file: str, output_dir: str) -> str:
         """
         Extract mesh data from 3D model using Python (replaces extract.sh)
         Returns path to generated .npz file
         """
         # Import required modules
-        from src.data.extract import get_files
+        from src.data.extract import get_files, extract_builtin
         
         # Create extraction parameters
         files = get_files(
             data_name="raw_data.npz",
-            inputs=input_file,
+            inputs=str(input_file),
             input_dataset_dir=None,
             output_dataset_dir=output_dir,
             force_override=True,
             warning=False,
         )
         
-        # Get the npz file path
-        if files:
-            return files[0][1]  # Return the npz file path
+        if not files:
+            raise RuntimeError("No files to extract")
         
-        raise RuntimeError("No .npz file generated during extraction")
+        # Run the actual extraction
+        timestamp = str(int(time.time()))
+        extract_builtin(
+            output_folder=output_dir,
+            target_count=50000,
+            num_runs=1,
+            id=0,
+            time=timestamp,
+            files=files,
+        )
+        
+        # Return the directory path where raw_data.npz was created
+        # The dataset expects to find raw_data.npz in this directory
+        expected_npz_dir = files[0][1]  # This is the output directory
+        expected_npz_file = Path(expected_npz_dir) / "raw_data.npz"
+        
+        if not expected_npz_file.exists():
+            raise RuntimeError(f"Extraction failed: {expected_npz_file} not found")
+        
+        return expected_npz_dir  # Return the directory containing raw_data.npz
     
     def run_skeleton_inference_python(self, input_file: str, output_file: str, seed: int = 12345) -> str:
         """
         Run skeleton inference using Python (replaces skeleton part of generate_skeleton.sh)
         Returns path to skeleton FBX file
         """
-        import lightning as L
         from box import Box
-        from src.data.dataset import UniRigDatasetModule, DatasetConfig
+
         from src.data.datapath import Datapath
+        from src.data.dataset import DatasetConfig, UniRigDatasetModule
         from src.data.transform import TransformConfig
-        from src.tokenizer.spec import TokenizerConfig
-        from src.tokenizer.parse import get_tokenizer
+        from src.inference.download import download
         from src.model.parse import get_model
         from src.system.parse import get_system, get_writer
-        from src.inference.download import download
+        from src.tokenizer.parse import get_tokenizer
+        from src.tokenizer.spec import TokenizerConfig
         
         # Set random seed
         L.seed_everything(seed, workers=True)
         
         # Load task configuration
         task_config_path = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
+        if not Path(task_config_path).exists():
+            raise FileNotFoundError(f"Task configuration file not found: {task_config_path}")
+        
+        # Load the task configuration
         with open(task_config_path, 'r') as f:
             task = Box(yaml.safe_load(f))
         
         # Create temporary npz directory
-        npz_dir = os.path.join(os.path.dirname(output_file), "tmp")
-        os.makedirs(npz_dir, exist_ok=True)
+        npz_dir = Path(output_file).parent / "npz"
+        npz_dir.mkdir(exist_ok=True)
         
         # Extract mesh data
-        npz_file = self.extract_mesh_python(input_file, npz_dir)
+        npz_data_dir = self.extract_mesh_python(input_file, npz_dir)
         
-        # Setup datapath
-        datapath = Datapath(files=[npz_file], cls=None)
+        # Setup datapath with the directory containing raw_data.npz
+        datapath = Datapath(files=[npz_data_dir], cls=None)
         
         # Load configurations
         data_config = Box(yaml.safe_load(open("configs/data/quick_inference.yaml", 'r')))
@@ -391,10 +281,12 @@ class UniRigDemo:
         # Setup callbacks and writer
         callbacks = []
         writer_config = task.writer.copy()
-        writer_config['npz_dir'] = npz_dir
-        writer_config['output_dir'] = os.path.dirname(output_file)
-        writer_config['output_name'] = output_file
-        writer_config['user_mode'] = True
+        writer_config['npz_dir'] = str(npz_dir)
+        writer_config['output_dir'] = str(Path(output_file).parent)
+        writer_config['output_name'] = Path(output_file).name
+        writer_config['user_mode'] = False  # Set to False to enable NPZ export
+        print(f"Writer config: {writer_config}")
+        # But we want the FBX to go to our specified location when in user mode for FBX
         callbacks.append(get_writer(**writer_config, order_config=predict_transform_config.order_config))
         
         # Get system
@@ -410,36 +302,58 @@ class UniRigDemo:
         # Run prediction
         trainer.predict(system, datamodule=data, ckpt_path=resume_from_checkpoint, return_predictions=False)
         
-        return output_file
+        # The actual output file will be in a subdirectory named after the input file
+        # Look for the generated skeleton.fbx file
+        input_name_stem = Path(input_file).stem
+        actual_output_dir = Path(output_file).parent / input_name_stem
+        actual_output_file = actual_output_dir / "skeleton.fbx"
+        
+        if not actual_output_file.exists():
+            # Try alternative locations - look for any skeleton.fbx file in the output directory
+            alt_files = list(Path(output_file).parent.rglob("skeleton.fbx"))
+            if alt_files:
+                actual_output_file = alt_files[0]
+                print(f"Found skeleton at alternative location: {actual_output_file}")
+            else:
+                # List all files for debugging
+                all_files = list(Path(output_file).parent.rglob("*"))
+                print(f"Available files: {[str(f) for f in all_files]}")
+                raise RuntimeError(f"Skeleton FBX file not found. Expected at: {actual_output_file}")
+        
+        # Copy to the expected output location
+        if actual_output_file != Path(output_file):
+            shutil.copy2(actual_output_file, output_file)
+            print(f"Copied skeleton from {actual_output_file} to {output_file}")
+        
+        print(f"Generated skeleton at: {output_file}")
+        return str(output_file)
     
     def run_skin_inference_python(self, skeleton_file: str, output_file: str) -> str:
         """
         Run skin inference using Python (replaces skin part of generate_skin.sh)
         Returns path to skin FBX file
         """
-        import lightning as L
         from box import Box
-        from src.data.dataset import UniRigDatasetModule, DatasetConfig
+
         from src.data.datapath import Datapath
+        from src.data.dataset import DatasetConfig, UniRigDatasetModule
         from src.data.transform import TransformConfig
+        from src.inference.download import download
         from src.model.parse import get_model
         from src.system.parse import get_system, get_writer
-        from src.inference.download import download
         
         # Load task configuration
         task_config_path = "configs/task/quick_inference_unirig_skin.yaml"
         with open(task_config_path, 'r') as f:
             task = Box(yaml.safe_load(f))
+                
+        # Look for files matching predict_skeleton.npz pattern recursively
+        skeleton_work_dir = Path(skeleton_file).parent
+        all_npz_files = list(skeleton_work_dir.rglob("**/*.npz"))
         
-        # Find the npz directory (should contain predict_skeleton.npz)
-        npz_dir = os.path.join(os.path.dirname(skeleton_file), "tmp")
-        skeleton_npz = os.path.join(npz_dir, "predict_skeleton.npz")
-        
-        if not os.path.exists(skeleton_npz):
-            raise RuntimeError(f"Skeleton NPZ file not found: {skeleton_npz}")
-        
-        # Setup datapath
-        datapath = Datapath(files=[skeleton_npz], cls=None)
+        # Setup datapath - need to pass the directory containing the NPZ file
+        skeleton_npz_dir = all_npz_files[0].parent
+        datapath = Datapath(files=[str(skeleton_npz_dir)], cls=None)
         
         # Load configurations
         data_config = Box(yaml.safe_load(open("configs/data/quick_inference.yaml", 'r')))
@@ -468,10 +382,10 @@ class UniRigDemo:
         # Setup callbacks and writer
         callbacks = []
         writer_config = task.writer.copy()
-        writer_config['npz_dir'] = npz_dir
-        writer_config['output_dir'] = os.path.dirname(output_file)
-        writer_config['output_name'] = output_file
+        writer_config['npz_dir'] = str(skeleton_npz_dir)
+        writer_config['output_name'] = str(output_file)
         writer_config['user_mode'] = True
+        writer_config['export_fbx'] = True  # Enable FBX export
         callbacks.append(get_writer(**writer_config, order_config=predict_transform_config.order_config))
         
         # Get system
@@ -487,7 +401,19 @@ class UniRigDemo:
         # Run prediction
         trainer.predict(system, datamodule=data, ckpt_path=resume_from_checkpoint, return_predictions=False)
         
-        return output_file
+        # The skin FBX file should be generated with the specified output name
+        # Since user_mode is True and export_fbx is True, it should create the file directly
+        if not Path(output_file).exists():
+            # Look for generated skin FBX files in the output directory
+            skin_files = list(Path(output_file).parent.rglob("*skin*.fbx"))
+            if skin_files:
+                actual_output_file = skin_files[0]
+                # Copy/move to the expected location
+                shutil.copy2(actual_output_file, output_file)
+            else:
+                raise RuntimeError(f"Skin FBX file not found. Expected at: {output_file}")
+        
+        return str(output_file)
     
     def merge_results_python(self, source_file: str, target_file: str, output_file: str) -> str:
         """
@@ -496,10 +422,27 @@ class UniRigDemo:
         """
         from src.inference.merge import transfer
         
-        # Use the transfer function directly
-        transfer(source=source_file, target=target_file, output=output_file, add_root=False)
+        # Validate input paths
+        if not Path(source_file).exists():
+            raise ValueError(f"Source file does not exist: {source_file}")
+        if not Path(target_file).exists():
+            raise ValueError(f"Target file does not exist: {target_file}")
         
-        return output_file
+        # Ensure output directory exists
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Use the transfer function directly
+        transfer(source=str(source_file), target=str(target_file), output=str(output_path), add_root=False)
+        
+        # Validate that the output file was created and is a valid file
+        if not output_path.exists():
+            raise RuntimeError(f"Merge failed: Output file not created at {output_path}")
+        
+        if not output_path.is_file():
+            raise RuntimeError(f"Merge failed: Output path is not a valid file: {output_path}")
+        
+        return str(output_path.resolve())
 
 
 def create_app():
@@ -528,148 +471,38 @@ def create_app():
             <li><strong>Skinning Weights:</strong> Automatic vertex-to-bone weight assignment</li>
             <li><strong>Universal Support:</strong> Works with humans, animals, and objects</li>
         </ul>
-        <p><strong>Supported formats:</strong> .obj, .fbx, .glb, .gltf, .vrm</p>
+        <p><strong>Supported formats:</strong> .obj, .fbx, .glb</p>
         """)
         
-        # Main Interface Tabs
-        with gr.Tabs():
+        with gr.Row(equal_height=True):
+            with gr.Column(scale=1):
+                input_3d_model = gr.File(
+                    label="Upload 3D Model",
+                    file_types=[".obj", ".fbx", ".glb"],
+                    type="filepath",
+                )
+                
+                with gr.Row(equal_height=True):
+                    seed = gr.Number(
+                        value=12345,
+                        label="Random Seed (for reproducible results)",
+                        scale=4,
+                    )
+                    random_btn = gr.Button("🔄 Random Seed", variant="secondary", scale=1)
+                pipeline_btn = gr.Button("🎯 Start Complete Pipeline", variant="primary", size="lg")
             
-            # Complete Pipeline Tab
-            with gr.Tab("🚀 Complete Pipeline", elem_id="pipeline-tab"):                
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        pipeline_input = gr.File(
-                            label="Upload 3D Model",
-                            file_types=[".obj", ".fbx", ".glb", ".gltf", ".vrm"],
-                            type="filepath",
-                        )
-                        pipeline_seed = gr.Slider(
-                            minimum=1,
-                            maximum=99999,
-                            value=12345,
-                            step=1,
-                            label="Random Seed (for reproducible results)"
-                        )
-                        pipeline_btn = gr.Button("🎯 Start Complete Pipeline", variant="primary", size="lg")
-                    
-                    with gr.Column(scale=1):
-                        pipeline_status = gr.Markdown("Ready to process your 3D model...")
-                        pipeline_preview = gr.HTML("")
-                
-                with gr.Row():
-                    with gr.Column():
-                        gr.HTML("<h4>📥 Download Results</h4>")
-                        pipeline_skeleton_out = gr.File(label="Skeleton (.fbx)", visible=False)
-                        pipeline_skin_out = gr.File(label="Skinning Weights (.fbx)", visible=False)
-                        pipeline_final_out = gr.File(label="Final Rigged Model (.glb)", visible=False)
-                
-                pipeline_btn.click(
-                    fn=demo_instance.complete_pipeline,
-                    inputs=[pipeline_input, pipeline_seed],
-                    outputs=[pipeline_status, pipeline_skeleton_out, pipeline_skin_out, 
-                            pipeline_final_out, pipeline_preview]
-                )
-            
-            # Step-by-Step Tab
-            with gr.Tab("🔧 Step-by-Step Process", elem_id="stepwise-tab"):
-                gr.HTML("<h3>Manual Step-by-Step Rigging Process</h3>")
-                gr.HTML("<p>Process your model step by step with full control over each stage.</p>")
-                
-                # Step 1: Skeleton Generation
-                with gr.Group():
-                    gr.HTML("<h4>Step 1: Skeleton Generation</h4>")
-                    with gr.Row():
-                        with gr.Column():
-                            step1_input = gr.File(
-                                label="Upload 3D Model",
-                                file_types=[".obj", ".fbx", ".glb", ".gltf", ".vrm"],
-                                type="filepath"
-                            )
-                            step1_seed = gr.Slider(
-                                minimum=1,
-                                maximum=99999,
-                                value=12345,
-                                step=1,
-                                label="Random Seed"
-                            )
-                            step1_btn = gr.Button("Generate Skeleton", variant="secondary")
-                        
-                        with gr.Column():
-                            step1_status = gr.Markdown("Upload a model to start...")
-                            step1_preview = gr.HTML("")
-                            step1_output = gr.File(label="Skeleton File (.fbx)", visible=False)
-                
-                # Step 2: Skinning Generation
-                with gr.Group():
-                    gr.HTML("<h4>Step 2: Skinning Weight Generation</h4>")
-                    with gr.Row():
-                        with gr.Column():
-                            step2_input = gr.File(
-                                label="Skeleton File (from Step 1)",
-                                file_types=[".fbx"],
-                                type="filepath"
-                            )
-                            step2_btn = gr.Button("Generate Skinning Weights", variant="secondary")
-                        
-                        with gr.Column():
-                            step2_status = gr.Markdown("Complete Step 1 first...")
-                            step2_preview = gr.HTML("")
-                            step2_output = gr.File(label="Skinning File (.fbx)", visible=False)
-                
-                # Step 3: Merge Results
-                with gr.Group():
-                    gr.HTML("<h4>Step 3: Merge with Original Model</h4>")
-                    with gr.Row():
-                        with gr.Column():
-                            step3_original = gr.File(
-                                label="Original Model",
-                                file_types=[".obj", ".fbx", ".glb", ".gltf", ".vrm"],
-                                type="filepath"
-                            )
-                            step3_rigged = gr.File(
-                                label="Rigged File (from Step 2)",
-                                file_types=[".fbx"],
-                                type="filepath"
-                            )
-                            step3_btn = gr.Button("Merge Results", variant="secondary")
-                        
-                        with gr.Column():
-                            step3_status = gr.Markdown("Complete previous steps first...")
-                            step3_preview = gr.HTML("")
-                            step3_output = gr.File(label="Final Rigged Model (.glb)", visible=False)
-                
-                # Event handlers for step-by-step
-                step1_btn.click(
-                    fn=demo_instance.generate_skeleton,
-                    inputs=[step1_input, step1_seed],
-                    outputs=[step1_status, step1_output, step1_preview]
-                )
-                
-                step2_btn.click(
-                    fn=demo_instance.generate_skinning,
-                    inputs=[step2_input],
-                    outputs=[step2_status, step2_output, step2_preview]
-                )
-                
-                step3_btn.click(
-                    fn=demo_instance.merge_results,
-                    inputs=[step3_original, step3_rigged],
-                    outputs=[step3_status, step3_output, step3_preview]
-                )
-                
-                # Auto-populate step 2 input when step 1 completes
-                step1_output.change(
-                    fn=lambda x: x,
-                    inputs=[step1_output],
-                    outputs=[step2_input]
-                )
-                
-                # Auto-populate step 3 rigged input when step 2 completes
-                step2_output.change(
-                    fn=lambda x: x,
-                    inputs=[step2_output],
-                    outputs=[step3_rigged]
-                )
+            pipeline_skeleton_out = gr.File(label="Final Rigged Model")
+        
+        random_btn.click(
+            fn=lambda: int(torch.randint(0, 100000, (1,)).item()),
+            outputs=seed
+        )
+        
+        pipeline_btn.click(
+            fn=demo_instance.complete_pipeline,
+            inputs=[input_3d_model, seed],
+            outputs=[pipeline_skeleton_out]
+        )
         
         # Footer
         gr.HTML("""
@@ -679,9 +512,6 @@ def create_app():
                 📄 <a href="https://arxiv.org/abs/2504.12451" target="_blank">Paper</a> | 
                 🏠 <a href="https://zjp-shadow.github.io/works/UniRig/" target="_blank">Project Page</a> | 
                 🤗 <a href="https://huggingface.co/VAST-AI/UniRig" target="_blank">Models</a>
-            </p>
-            <p style="color: #9ca3af; font-size: 0.9em;">
-                ⚡ Powered by PyTorch & Gradio | 🎯 GPU recommended for optimal performance
             </p>
         </div>
         """)
