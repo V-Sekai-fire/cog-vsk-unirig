@@ -10,7 +10,7 @@ import spaces
 import torch
 import yaml
 
-subprocess.run('pip install flash-attn --no-build-isolation', shell=True)
+subprocess.run('pip install flash-attn --no-build-isolation', env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"}, shell=True)
 
 # Get the PyTorch and CUDA versions
 torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
@@ -23,10 +23,8 @@ if cuda_version:
 else:
     cuda_version = "cpu"  # Fallback in case CUDA is not available
 
-
 subprocess.run(f'pip install spconv{spconv_version}', shell=True)
 subprocess.run(f'pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-{torch_version}+{cuda_version}.html --no-cache-dir', shell=True)
-
 
 # Helper functions
 def validate_input_file(file_path: str) -> bool:
