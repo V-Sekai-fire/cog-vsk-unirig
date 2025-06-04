@@ -1,3 +1,6 @@
+import os
+os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+
 import shutil
 import subprocess
 import time
@@ -364,6 +367,7 @@ def create_app():
         5. **Download results** - Different files will be generated based on your selected mode
 
         **Supported File Formats:** .obj, .fbx, .glb
+                    
         **Note:** The process may take a few minutes depending on the model complexity and server load.
         """)
         
@@ -371,13 +375,14 @@ def create_app():
             with gr.Column(scale=1):
                 input_3d_model = gr.Model3D(label="Upload 3D Model")
                 
-                with gr.Row(equal_height=True):
-                    seed = gr.Number(
-                        value=int(torch.randint(0, 100000, (1,)).item()),
-                        label="Random Seed (for reproducible results)",
-                        scale=4,
-                    )
-                    random_btn = gr.Button("🔄 Random Seed", variant="secondary", scale=1)
+                with gr.Group():
+                    with gr.Row(equal_height=True):
+                        seed = gr.Number(
+                            value=int(torch.randint(0, 100000, (1,)).item()),
+                            label="Random Seed (for reproducible results)",
+                            scale=4,
+                        )
+                        random_btn = gr.Button("🔄 Random Seed", variant="secondary", scale=1)
                 
                 pipeline_btn = gr.Button("🎯 Start Processing", variant="primary", size="lg")
             
