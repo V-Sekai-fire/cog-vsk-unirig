@@ -9,17 +9,6 @@ import lightning as L
 import spaces
 import torch
 import yaml
-
-subprocess.run("apt update && apt install -y libegl1-mesa-dev libgles2-mesa-dev libosmesa6-dev libgl1-mesa-glx libglu1-mesa-dev libglfw3-dev libglew-dev xvfb", shell=True)
-
-# Set environment variables for headless rendering
-import os
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
-os.environ['DISPLAY'] = ':99'
-
-# Start virtual display for headless rendering
-subprocess.run("Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &", shell=True)
-
 from box import Box
 
 # Get the PyTorch and CUDA versions
