@@ -9,8 +9,17 @@ import lightning as L
 import spaces
 import torch
 import yaml
+from box import Box
 
-subprocess.run('pip install flash-attn --no-build-isolation', env={'FLASH_ATTENTION_SKIP_CUDA_BUILD': "TRUE"}, shell=True)
+from src.data.datapath import Datapath
+from src.data.dataset import DatasetConfig, UniRigDatasetModule
+from src.data.extract import extract_builtin, get_files
+from src.data.transform import TransformConfig
+from src.inference.download import download
+from src.model.parse import get_model
+from src.system.parse import get_system, get_writer
+from src.tokenizer.parse import get_tokenizer
+from src.tokenizer.spec import TokenizerConfig
 
 # Get the PyTorch and CUDA versions
 torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
@@ -42,7 +51,6 @@ def extract_mesh_python(input_file: str, output_dir: str) -> str:
     Returns path to generated .npz file
     """
     # Import required modules
-    from src.data.extract import get_files, extract_builtin
     
     # Create extraction parameters
     files = get_files(
@@ -83,16 +91,6 @@ def run_skeleton_inference_python(input_file: str, output_file: str, seed: int =
     Run skeleton inference using Python (replaces skeleton part of generate_skeleton.sh)
     Returns path to skeleton FBX file
     """
-    from box import Box
-
-    from src.data.datapath import Datapath
-    from src.data.dataset import DatasetConfig, UniRigDatasetModule
-    from src.data.transform import TransformConfig
-    from src.inference.download import download
-    from src.model.parse import get_model
-    from src.system.parse import get_system, get_writer
-    from src.tokenizer.parse import get_tokenizer
-    from src.tokenizer.spec import TokenizerConfig
     
     # Set random seed
     L.seed_everything(seed, workers=True)
@@ -199,14 +197,6 @@ def run_skin_inference_python(skeleton_file: str, output_file: str) -> str:
     Run skin inference using Python (replaces skin part of generate_skin.sh)
     Returns path to skin FBX file
     """
-    from box import Box
-
-    from src.data.datapath import Datapath
-    from src.data.dataset import DatasetConfig, UniRigDatasetModule
-    from src.data.transform import TransformConfig
-    from src.inference.download import download
-    from src.model.parse import get_model
-    from src.system.parse import get_system, get_writer
     
     # Load task configuration
     task_config_path = "configs/task/quick_inference_unirig_skin.yaml"
