@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Tuple
@@ -9,6 +10,20 @@ import spaces
 import torch
 import yaml
 from box import Box
+
+# Get the PyTorch and CUDA versions
+torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
+cuda_version = torch.version.cuda
+spconv_version = "-cu121" if cuda_version else "" 
+
+# Format CUDA version to match the URL convention (e.g., "cu118" for CUDA 11.8)
+if cuda_version:
+    cuda_version = f"cu{cuda_version.replace('.', '')}"
+else:
+    cuda_version = "cpu"  # Fallback in case CUDA is not available
+
+subprocess.run(f'pip install spconv{spconv_version}', shell=True)
+subprocess.run(f'pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-{torch_version}+{cuda_version}.html --no-cache-dir', shell=True)
 
 from src.data.datapath import Datapath
 from src.data.dataset import DatasetConfig, UniRigDatasetModule
