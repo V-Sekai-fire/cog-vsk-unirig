@@ -9,9 +9,18 @@ import lightning as L
 import spaces
 import torch
 import yaml
-from box import Box
 
-subprocess.run("apt update && apt install -y libegl1-mesa libgles2-mesa libosmesa6 libgl1-mesa-glx", shell=True)
+subprocess.run("apt update && apt install -y libegl1-mesa-dev libgles2-mesa-dev libosmesa6-dev libgl1-mesa-glx libglu1-mesa-dev libglfw3-dev libglew-dev xvfb", shell=True)
+
+# Set environment variables for headless rendering
+import os
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
+os.environ['DISPLAY'] = ':99'
+
+# Start virtual display for headless rendering
+subprocess.run("Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &", shell=True)
+
+from box import Box
 
 # Get the PyTorch and CUDA versions
 torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
@@ -355,6 +364,7 @@ def create_app():
         
         # Usage Instructions Section
         gr.Markdown("""## Notes:
+- If you are not seeing the 3D model preview and you are using chrome, go to `chrome://flags/#enable-unsafe-webgpu` and enable the flag.
 - Supported File Formats are `.obj`, `.fbx`, `.glb`
 - The process may take a few minutes depending on the model complexity and server load.
         """)
