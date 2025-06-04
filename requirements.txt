@@ -17,8 +17,18 @@ scipy
 matplotlib
 plotly
 pyyaml
-https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.8/flash_attn-2.7.4.post1+cu126torch2.7-cp310-cp310-linux_x86_64.whl
-spconv-cu121
---find-links https://data.pyg.org/whl/torch-2.7+cu126.html
+# PyTorch and related packages - ensure compatibility
+torch==2.7.0
+torchvision
+torchaudio
+# PyTorch Geometric ecosystem packages
+--find-links https://data.pyg.org/whl/torch-2.7.0+cu126.html
 torch-scatter
+torch-sparse
 torch-cluster
+torch-spline-conv
+torch-geometric
+# Flash attention for PyTorch 2.7
+https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.8/flash_attn-2.7.4.post1+cu126torch2.7-cp310-cp310-linux_x86_64.whl
+# Sparse convolution
+spconv-cu121
