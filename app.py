@@ -25,17 +25,6 @@ else:
 subprocess.run(f'pip install spconv{spconv_version}', shell=True)
 subprocess.run(f'pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-{torch_version}+{cuda_version}.html --no-cache-dir', shell=True)
 
-from src.data.datapath import Datapath
-from src.data.dataset import DatasetConfig, UniRigDatasetModule
-from src.data.extract import extract_builtin, get_files
-from src.data.transform import TransformConfig
-from src.inference.download import download
-from src.model.parse import get_model
-from src.system.parse import get_system, get_writer
-from src.tokenizer.parse import get_tokenizer
-from src.tokenizer.spec import TokenizerConfig
-
-
 # Helper functions
 def validate_input_file(file_path: str) -> bool:
     """Validate if the input file format is supported."""
@@ -52,6 +41,7 @@ def extract_mesh_python(input_file: str, output_dir: str) -> str:
     Returns path to generated .npz file
     """
     # Import required modules
+    from src.data.extract import extract_builtin, get_files
     
     # Create extraction parameters
     files = get_files(
@@ -87,45 +77,95 @@ def extract_mesh_python(input_file: str, output_dir: str) -> str:
     
     return expected_npz_dir  # Return the directory containing raw_data.npz
 
-def run_skeleton_inference_python(input_file: str, output_file: str, seed: int = 12345) -> str:
+def run_inference_python(
+    input_file: str, 
+    output_file: str, 
+    inference_type: str, 
+    seed: int = 12345, 
+    npz_dir: str = None
+) -> str:
     """
-    Run skeleton inference using Python (replaces skeleton part of generate_skeleton.sh)
-    Returns path to skeleton FBX file
-    """
+    Unified inference function for both skeleton and skin inference.
     
-    # Set random seed
-    L.seed_everything(seed, workers=True)
+    Args:
+        input_file: Path to input file (3D model for skeleton, skeleton FBX for skin)
+        output_file: Path to output file
+        inference_type: Either "skeleton" or "skin"
+        seed: Random seed for reproducible results
+        npz_dir: Directory for NPZ files (used for skeleton inference)
+    
+    Returns:
+        Path to generated file
+    """
+    from src.data.datapath import Datapath
+    from src.data.dataset import DatasetConfig, UniRigDatasetModule
+    from src.data.transform import TransformConfig
+    from src.inference.download import download
+    from src.model.parse import get_model
+    from src.system.parse import get_system, get_writer
+    from src.tokenizer.parse import get_tokenizer
+    from src.tokenizer.spec import TokenizerConfig
+
+    # Set random seed for skeleton inference
+    if inference_type == "skeleton":
+        L.seed_everything(seed, workers=True)
+    
+    # Load task and model configurations based on inference type
+    if inference_type == "skeleton":
+        task_config_path = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
+        transform_config_path = "configs/transform/inference_ar_transform.yaml"
+        model_config_path = "configs/model/unirig_ar_350m_1024_81920_float32.yaml"
+        system_config_path = "configs/system/ar_inference_articulationxl.yaml"
+        tokenizer_config_path = "configs/tokenizer/tokenizer_parts_articulationxl_256.yaml"
+        data_name = "raw_data.npz"
+    else:  # skin
+        task_config_path = "configs/task/quick_inference_unirig_skin.yaml"
+        transform_config_path = "configs/transform/inference_skin_transform.yaml"
+        model_config_path = "configs/model/unirig_skin.yaml"
+        system_config_path = "configs/system/skin.yaml"
+        tokenizer_config_path = None
+        data_name = "predict_skeleton.npz"
     
     # Load task configuration
-    task_config_path = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
     if not Path(task_config_path).exists():
         raise FileNotFoundError(f"Task configuration file not found: {task_config_path}")
     
-    # Load the task configuration
     with open(task_config_path, 'r') as f:
         task = Box(yaml.safe_load(f))
     
-    # Create temporary npz directory
-    npz_dir = Path(output_file).parent / "npz"
-    npz_dir.mkdir(exist_ok=True)
+    # Setup data directory and datapath
+    if inference_type == "skeleton":
+        # Create temporary npz directory and extract mesh data
+        if npz_dir is None:
+            npz_dir = Path(output_file).parent / "npz"
+        npz_dir = Path(npz_dir)
+        npz_dir.mkdir(exist_ok=True)
+        npz_data_dir = extract_mesh_python(input_file, npz_dir)
+        datapath = Datapath(files=[npz_data_dir], cls=None)
+    else:  # skin
+        # Look for NPZ files from previous skeleton inference
+        skeleton_work_dir = Path(input_file).parent
+        all_npz_files = list(skeleton_work_dir.rglob("**/*.npz"))
+        if not all_npz_files:
+            raise RuntimeError(f"No NPZ files found for skin inference in {skeleton_work_dir}")
+        skeleton_npz_dir = all_npz_files[0].parent
+        datapath = Datapath(files=[str(skeleton_npz_dir)], cls=None)
     
-    # Extract mesh data
-    npz_data_dir = extract_mesh_python(input_file, npz_dir)
-    
-    # Setup datapath with the directory containing raw_data.npz
-    datapath = Datapath(files=[npz_data_dir], cls=None)
-    
-    # Load configurations
+    # Load common configurations
     data_config = Box(yaml.safe_load(open("configs/data/quick_inference.yaml", 'r')))
-    transform_config = Box(yaml.safe_load(open("configs/transform/inference_ar_transform.yaml", 'r')))
+    transform_config = Box(yaml.safe_load(open(transform_config_path, 'r')))
     
-    # Get tokenizer
-    tokenizer_config = TokenizerConfig.parse(config=Box(yaml.safe_load(open("configs/tokenizer/tokenizer_parts_articulationxl_256.yaml", 'r'))))
-    tokenizer = get_tokenizer(config=tokenizer_config)
-    
-    # Get model
-    model_config = Box(yaml.safe_load(open("configs/model/unirig_ar_350m_1024_81920_float32.yaml", 'r')))
-    model = get_model(tokenizer=tokenizer, **model_config)
+    # Setup tokenizer and model
+    if inference_type == "skeleton":
+        tokenizer_config = TokenizerConfig.parse(config=Box(yaml.safe_load(open(tokenizer_config_path, 'r'))))
+        tokenizer = get_tokenizer(config=tokenizer_config)
+        model_config = Box(yaml.safe_load(open(model_config_path, 'r')))
+        model = get_model(tokenizer=tokenizer, **model_config)
+    else:  # skin
+        tokenizer_config = None
+        tokenizer = None
+        model_config = Box(yaml.safe_load(open(model_config_path, 'r')))
+        model = get_model(tokenizer=None, **model_config)
     
     # Setup datasets and transforms
     predict_dataset_config = DatasetConfig.parse(config=data_config.predict_dataset_config).split_by_cls()
@@ -138,7 +178,7 @@ def run_skeleton_inference_python(input_file: str, output_file: str, seed: int =
         predict_transform_config=predict_transform_config,
         tokenizer_config=tokenizer_config,
         debug=False,
-        data_name="raw_data.npz",
+        data_name=data_name,
         datapath=datapath,
         cls=None,
     )
@@ -146,16 +186,23 @@ def run_skeleton_inference_python(input_file: str, output_file: str, seed: int =
     # Setup callbacks and writer
     callbacks = []
     writer_config = task.writer.copy()
-    writer_config['npz_dir'] = str(npz_dir)
-    writer_config['output_dir'] = str(Path(output_file).parent)
-    writer_config['output_name'] = Path(output_file).name
-    writer_config['user_mode'] = False  # Set to False to enable NPZ export
-    print(f"Writer config: {writer_config}")
-    # But we want the FBX to go to our specified location when in user mode for FBX
+    
+    if inference_type == "skeleton":
+        writer_config['npz_dir'] = str(npz_dir)
+        writer_config['output_dir'] = str(Path(output_file).parent)
+        writer_config['output_name'] = Path(output_file).name
+        writer_config['user_mode'] = False  # Enable NPZ export for skeleton
+    else:  # skin
+        writer_config['npz_dir'] = str(skeleton_npz_dir)
+        writer_config['output_name'] = str(output_file)
+        writer_config['user_mode'] = True
+        writer_config['export_fbx'] = True
+    
+    print(f"Writer config for {inference_type}: {writer_config}")
     callbacks.append(get_writer(**writer_config, order_config=predict_transform_config.order_config))
     
     # Get system
-    system_config = Box(yaml.safe_load(open("configs/system/ar_inference_articulationxl.yaml", 'r')))
+    system_config = Box(yaml.safe_load(open(system_config_path, 'r')))
     system = get_system(**system_config, model=model, steps_per_epoch=1)
     
     # Setup trainer
@@ -167,109 +214,41 @@ def run_skeleton_inference_python(input_file: str, output_file: str, seed: int =
     # Run prediction
     trainer.predict(system, datamodule=data, ckpt_path=resume_from_checkpoint, return_predictions=False)
     
-    # The actual output file will be in a subdirectory named after the input file
-    # Look for the generated skeleton.fbx file
-    input_name_stem = Path(input_file).stem
-    actual_output_dir = Path(output_file).parent / input_name_stem
-    actual_output_file = actual_output_dir / "skeleton.fbx"
-    
-    if not actual_output_file.exists():
-        # Try alternative locations - look for any skeleton.fbx file in the output directory
-        alt_files = list(Path(output_file).parent.rglob("skeleton.fbx"))
-        if alt_files:
-            actual_output_file = alt_files[0]
-            print(f"Found skeleton at alternative location: {actual_output_file}")
-        else:
-            # List all files for debugging
-            all_files = list(Path(output_file).parent.rglob("*"))
-            print(f"Available files: {[str(f) for f in all_files]}")
-            raise RuntimeError(f"Skeleton FBX file not found. Expected at: {actual_output_file}")
-    
-    # Copy to the expected output location
-    if actual_output_file != Path(output_file):
-        shutil.copy2(actual_output_file, output_file)
-        print(f"Copied skeleton from {actual_output_file} to {output_file}")
-    
-    print(f"Generated skeleton at: {output_file}")
-    return str(output_file)
-
-def run_skin_inference_python(skeleton_file: str, output_file: str) -> str:
-    """
-    Run skin inference using Python (replaces skin part of generate_skin.sh)
-    Returns path to skin FBX file
-    """
-    
-    # Load task configuration
-    task_config_path = "configs/task/quick_inference_unirig_skin.yaml"
-    with open(task_config_path, 'r') as f:
-        task = Box(yaml.safe_load(f))
-            
-    # Look for files matching predict_skeleton.npz pattern recursively
-    skeleton_work_dir = Path(skeleton_file).parent
-    all_npz_files = list(skeleton_work_dir.rglob("**/*.npz"))
-    
-    # Setup datapath - need to pass the directory containing the NPZ file
-    skeleton_npz_dir = all_npz_files[0].parent
-    datapath = Datapath(files=[str(skeleton_npz_dir)], cls=None)
-    
-    # Load configurations
-    data_config = Box(yaml.safe_load(open("configs/data/quick_inference.yaml", 'r')))
-    transform_config = Box(yaml.safe_load(open("configs/transform/inference_skin_transform.yaml", 'r')))
-    
-    # Get model
-    model_config = Box(yaml.safe_load(open("configs/model/unirig_skin.yaml", 'r')))
-    model = get_model(tokenizer=None, **model_config)
-    
-    # Setup datasets and transforms
-    predict_dataset_config = DatasetConfig.parse(config=data_config.predict_dataset_config).split_by_cls()
-    predict_transform_config = TransformConfig.parse(config=transform_config.predict_transform_config)
-    
-    # Create data module
-    data = UniRigDatasetModule(
-        process_fn=model._process_fn,
-        predict_dataset_config=predict_dataset_config,
-        predict_transform_config=predict_transform_config,
-        tokenizer_config=None,
-        debug=False,
-        data_name="predict_skeleton.npz",
-        datapath=datapath,
-        cls=None,
-    )
-    
-    # Setup callbacks and writer
-    callbacks = []
-    writer_config = task.writer.copy()
-    writer_config['npz_dir'] = str(skeleton_npz_dir)
-    writer_config['output_name'] = str(output_file)
-    writer_config['user_mode'] = True
-    writer_config['export_fbx'] = True  # Enable FBX export
-    callbacks.append(get_writer(**writer_config, order_config=predict_transform_config.order_config))
-    
-    # Get system
-    system_config = Box(yaml.safe_load(open("configs/system/skin.yaml", 'r')))
-    system = get_system(**system_config, model=model, steps_per_epoch=1)
-    
-    # Setup trainer
-    trainer_config = task.trainer
-    resume_from_checkpoint = download(task.resume_from_checkpoint)
-    
-    trainer = L.Trainer(callbacks=callbacks, logger=None, **trainer_config)
-    
-    # Run prediction
-    trainer.predict(system, datamodule=data, ckpt_path=resume_from_checkpoint, return_predictions=False)
-    
-    # The skin FBX file should be generated with the specified output name
-    # Since user_mode is True and export_fbx is True, it should create the file directly
-    if not Path(output_file).exists():
-        # Look for generated skin FBX files in the output directory
-        skin_files = list(Path(output_file).parent.rglob("*skin*.fbx"))
-        if skin_files:
-            actual_output_file = skin_files[0]
-            # Copy/move to the expected location
+    # Handle output file location and validation
+    if inference_type == "skeleton":
+        # Look for the generated skeleton.fbx file
+        input_name_stem = Path(input_file).stem
+        actual_output_dir = Path(output_file).parent / input_name_stem
+        actual_output_file = actual_output_dir / "skeleton.fbx"
+        
+        if not actual_output_file.exists():
+            # Try alternative locations
+            alt_files = list(Path(output_file).parent.rglob("skeleton.fbx"))
+            if alt_files:
+                actual_output_file = alt_files[0]
+                print(f"Found skeleton at alternative location: {actual_output_file}")
+            else:
+                all_files = list(Path(output_file).parent.rglob("*"))
+                print(f"Available files: {[str(f) for f in all_files]}")
+                raise RuntimeError(f"Skeleton FBX file not found. Expected at: {actual_output_file}")
+        
+        # Copy to the expected output location
+        if actual_output_file != Path(output_file):
             shutil.copy2(actual_output_file, output_file)
-        else:
-            raise RuntimeError(f"Skin FBX file not found. Expected at: {output_file}")
+            print(f"Copied skeleton from {actual_output_file} to {output_file}")
     
+    else:  # skin
+        # Check if skin FBX file was generated
+        if not Path(output_file).exists():
+            # Look for generated skin FBX files
+            skin_files = list(Path(output_file).parent.rglob("*skin*.fbx"))
+            if skin_files:
+                actual_output_file = skin_files[0]
+                shutil.copy2(actual_output_file, output_file)
+            else:
+                raise RuntimeError(f"Skin FBX file not found. Expected at: {output_file}")
+    
+    print(f"Generated {inference_type} at: {output_file}")
     return str(output_file)
 
 def merge_results_python(source_file: str, target_file: str, output_file: str) -> str:
@@ -302,9 +281,9 @@ def merge_results_python(source_file: str, target_file: str, output_file: str) -
     return str(output_path.resolve())
 
 @spaces.GPU()
-def complete_pipeline(input_file: str, seed: int = 12345) -> Tuple[str, list]:
+def main(input_file: str, seed: int = 12345) -> Tuple[str, list]:
     """
-    Run the complete rigging pipeline: skeleton generation → skinning → merge.
+    Run the rigging pipeline based on selected mode.
     
     Args:
         input_file: Path to the input 3D model file
@@ -336,20 +315,29 @@ def complete_pipeline(input_file: str, seed: int = 12345) -> Tuple[str, list]:
     input_file = input_model_dir / input_file.name
     print(f"New input file path: {input_file}")
     
-    # Step 1: Generate skeleton        
-    output_skeleton_file = input_model_dir / f"{file_stem}_skeleton.fbx"
-    run_skeleton_inference_python(input_file, output_skeleton_file, seed)        
-
-    # Step 2: Generate skinning
-    output_skin_file = input_model_dir / f"{file_stem}_skin.fbx"
-    run_skin_inference_python(output_skeleton_file, output_skin_file)
+    # Initialize file paths and output list
+    output_files = []
+    final_file = None
     
-    # Step 3: Merge results
-    final_file = input_model_dir / f"{file_stem}_rigged.glb"
-    merge_results_python(output_skin_file, input_file, final_file)
+    # Step 1: Generate skeleton
+    intermediate_skeleton_file = input_model_dir / f"{file_stem}_skeleton.fbx"
+    final_skeleton_file = input_model_dir / f"{file_stem}_skeleton_only{input_file.suffix}"
+    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed)
+    merge_results_python(intermediate_skeleton_file, input_file, final_skeleton_file)
+    
+    # Step 2: Generate skinning and Merge everything together
+    intermediate_skin_file = input_model_dir / f"{file_stem}_skin.fbx"
+    final_skin_file = input_model_dir / f"{file_stem}_skeleton_and_skinning{input_file.suffix}"
+    run_inference_python(intermediate_skeleton_file, intermediate_skin_file, "skin")
+    merge_results_python(intermediate_skin_file, input_file, final_skin_file)
+    
+    final_file = str(final_skin_file)
+    output_files = [str(final_skeleton_file), str(final_skin_file)]
 
-    return str(final_file), [str(output_skeleton_file), str(output_skin_file), str(final_file)]
+    return final_file, output_files
 
+# main("/home/morashad/projects/UniRig/UniRig/tmp/base_basic_pbr_12345/base_basic_pbr_skeleton.glb", "Skinning Only", 1234)
+# exit()
 
 def create_app():
     """Create and configure the Gradio interface."""
@@ -370,9 +358,13 @@ def create_app():
         gr.Markdown("""
         ## 📋 How to Use ?
         1. **Upload your 3D model** - Drop your .obj, .fbx, or .glb file in the upload area
-        2. **Set random seed** (optional) - Use the same seed for reproducible results
-        3. **Click "Start Complete Pipeline"** - The AI will automatically rig your model
-        4. **Download results** - `_skeleton.fbx` is the base model with skeleton, `_skin.fbx` is the base model with armature/skeleton and skinning weights, and `_rigged.*` is the final rigged model ready for use.
+        2. **Choose processing mode**:
+           - **Skeleton Only**: Generate just the bone structure for your model
+           - **Skinning Only**: Apply skinning weights (requires existing skeleton data)
+           - **Complete Pipeline**: Full automated rigging (skeleton + skinning + merge)
+        3. **Set random seed** (optional) - Use the same seed for reproducible results
+        4. **Click "Start Processing"** - The AI will process your model based on the selected mode
+        5. **Download results** - Different files will be generated based on your selected mode
 
         **Supported File Formats:** .obj, .fbx, .glb
         **Note:** The process may take a few minutes depending on the model complexity and server load.
@@ -384,16 +376,16 @@ def create_app():
                 
                 with gr.Row(equal_height=True):
                     seed = gr.Number(
-                        value=12345,
+                        value=int(torch.randint(0, 100000, (1,)).item()),
                         label="Random Seed (for reproducible results)",
                         scale=4,
                     )
                     random_btn = gr.Button("🔄 Random Seed", variant="secondary", scale=1)
                 
-                pipeline_btn = gr.Button("🎯 Start Complete Pipeline", variant="primary", size="lg")
+                pipeline_btn = gr.Button("🎯 Start Processing", variant="primary", size="lg")
             
             with gr.Column():
-                pipeline_skeleton_out = gr.Model3D(label="Final Rigged Model", scale=4)
+                pipeline_skeleton_out = gr.Model3D(label="Final Result", scale=4)
                 files_to_download = gr.Files(label="Download Files", scale=1)
                    
         random_btn.click(
@@ -402,7 +394,7 @@ def create_app():
         )
         
         pipeline_btn.click(
-            fn=complete_pipeline,
+            fn=main,
             inputs=[input_3d_model, seed],
             outputs=[pipeline_skeleton_out, files_to_download]
         )
