@@ -1,6 +1,3 @@
-import os
-os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-
 import shutil
 import subprocess
 import time
@@ -13,6 +10,9 @@ import spaces
 import torch
 import yaml
 from box import Box
+
+subprocess.run(["apt", "update"], check=True)
+subprocess.run(["apt", "install", "-y", "libegl1-mesa", "libgles2-mesa"], check=True)
 
 # Get the PyTorch and CUDA versions
 torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
@@ -355,20 +355,9 @@ def create_app():
         """)
         
         # Usage Instructions Section
-        gr.Markdown("""
-        ## 📋 How to Use ?
-        1. **Upload your 3D model** - Drop your .obj, .fbx, or .glb file in the upload area
-        2. **Choose processing mode**:
-           - **Skeleton Only**: Generate just the bone structure for your model
-           - **Skinning Only**: Apply skinning weights (requires existing skeleton data)
-           - **Complete Pipeline**: Full automated rigging (skeleton + skinning + merge)
-        3. **Set random seed** (optional) - Use the same seed for reproducible results
-        4. **Click "Start Processing"** - The AI will process your model based on the selected mode
-        5. **Download results** - Different files will be generated based on your selected mode
-
-        **Supported File Formats:** .obj, .fbx, .glb
-                    
-        **Note:** The process may take a few minutes depending on the model complexity and server load.
+        gr.Markdown("""## Notes:
+- Supported File Formats are `.obj`, `.fbx`, `.glb`
+- The process may take a few minutes depending on the model complexity and server load.
         """)
         
         with gr.Row(equal_height=True):
