@@ -11,16 +11,6 @@ import torch
 import yaml
 from box import Box
 
-from src.data.datapath import Datapath
-from src.data.dataset import DatasetConfig, UniRigDatasetModule
-from src.data.extract import extract_builtin, get_files
-from src.data.transform import TransformConfig
-from src.inference.download import download
-from src.model.parse import get_model
-from src.system.parse import get_system, get_writer
-from src.tokenizer.parse import get_tokenizer
-from src.tokenizer.spec import TokenizerConfig
-
 # Get the PyTorch and CUDA versions
 torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
 cuda_version = torch.version.cuda
@@ -34,6 +24,17 @@ else:
 
 subprocess.run(f'pip install spconv{spconv_version}', shell=True)
 subprocess.run(f'pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-{torch_version}+{cuda_version}.html --no-cache-dir', shell=True)
+
+from src.data.datapath import Datapath
+from src.data.dataset import DatasetConfig, UniRigDatasetModule
+from src.data.extract import extract_builtin, get_files
+from src.data.transform import TransformConfig
+from src.inference.download import download
+from src.model.parse import get_model
+from src.system.parse import get_system, get_writer
+from src.tokenizer.parse import get_tokenizer
+from src.tokenizer.spec import TokenizerConfig
+
 
 # Helper functions
 def validate_input_file(file_path: str) -> bool:
