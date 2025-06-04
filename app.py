@@ -11,7 +11,7 @@ import torch
 import yaml
 from box import Box
 
-subprocess.run(["apt", "update", "&&", "apt", "install", "-y", "libegl1-mesa", "libgles2-mesa"], check=True)
+subprocess.run(["apt", "update", "&&", "apt", "install", "-y", "libegl1-mesa", "libgles2-mesa", "libosmesa6", "libgl1-mesa-glx"], shell=True)
 
 # Get the PyTorch and CUDA versions
 torch_version = torch.__version__.split("+")[0]  # Strips any "+cuXXX" suffix
