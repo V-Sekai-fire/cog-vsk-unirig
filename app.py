@@ -336,9 +336,6 @@ def main(input_file: str, seed: int = 12345) -> Tuple[str, list]:
 
     return final_file, output_files
 
-# main("/home/morashad/projects/UniRig/UniRig/tmp/base_basic_pbr_12345/base_basic_pbr_skeleton.glb", "Skinning Only", 1234)
-# exit()
-
 def create_app():
     """Create and configure the Gradio interface."""
     
