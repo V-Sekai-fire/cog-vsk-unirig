@@ -82,8 +82,7 @@ def run_inference_python(
     output_file: str, 
     inference_type: str, 
     seed: int = 12345, 
-    npz_dir: str = None,
-    bone_naming: str = "mixamo"
+    npz_dir: str = None
 ) -> str:
     """
     Unified inference function for both skeleton and skin inference.
@@ -94,7 +93,6 @@ def run_inference_python(
         inference_type: Either "skeleton" or "skin"
         seed: Random seed for reproducible results
         npz_dir: Directory for NPZ files (used for skeleton inference)
-        bone_naming: Bone naming convention ("mixamo", "vroid", or "generic")
     
     Returns:
         Path to generated file
@@ -203,15 +201,8 @@ def run_inference_python(
     print(f"Writer config for {inference_type}: {writer_config}")
     callbacks.append(get_writer(**writer_config, order_config=predict_transform_config.order_config))
     
-    # Get system configuration and modify assign_cls based on bone_naming
+    # Get system
     system_config = Box(yaml.safe_load(open(system_config_path, 'r')))
-    
-    # Modify the assign_cls based on bone_naming parameter
-    if inference_type == "skeleton" and bone_naming != "generic":
-        # For skeleton inference, set the appropriate class assignment
-        system_config.generate_kwargs.assign_cls = bone_naming
-        print(f"Using bone naming convention: {bone_naming}")
-    
     system = get_system(**system_config, model=model, steps_per_epoch=1)
     
     # Setup trainer
@@ -290,14 +281,13 @@ def merge_results_python(source_file: str, target_file: str, output_file: str) -
     return str(output_path.resolve())
 
 @spaces.GPU()
-def main(input_file: str, seed: int = 12345, bone_naming: str = "mixamo") -> Tuple[str, list]:
+def main(input_file: str, seed: int = 12345) -> Tuple[str, list]:
     """
     Run the rigging pipeline based on selected mode.
     
     Args:
         input_file: Path to the input 3D model file
         seed: Random seed for reproducible results
-        bone_naming: Bone naming convention ("mixamo", "vroid", or "generic")
         
     Returns:
         Tuple of (final_file_path, list_of_intermediate_files)
@@ -313,11 +303,6 @@ def main(input_file: str, seed: int = 12345, bone_naming: str = "mixamo") -> Tup
     # Validate input file
     if not validate_input_file(input_file):
         raise gr.Error(f"Error: Invalid or unsupported file format. Supported formats: {', '.join(supported_formats)}")
-    
-    # Validate bone naming option
-    valid_naming_options = ["mixamo", "vroid", "generic"]
-    if bone_naming not in valid_naming_options:
-        raise gr.Error(f"Error: Invalid bone naming option. Valid options: {', '.join(valid_naming_options)}")
     
     # Create working directory
     file_stem = Path(input_file).stem
@@ -337,7 +322,7 @@ def main(input_file: str, seed: int = 12345, bone_naming: str = "mixamo") -> Tup
     # Step 1: Generate skeleton
     intermediate_skeleton_file = input_model_dir / f"{file_stem}_skeleton.fbx"
     final_skeleton_file = input_model_dir / f"{file_stem}_skeleton_only{input_file.suffix}"
-    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed, bone_naming=bone_naming)
+    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed)
     merge_results_python(intermediate_skeleton_file, input_file, final_skeleton_file)
     
     # Step 2: Generate skinning and Merge everything together
@@ -371,7 +356,6 @@ def create_app():
 - If you are not seeing the 3D model preview and you are using chrome, go to `chrome://flags/#enable-unsafe-webgpu` and enable the flag.
 - Supported File Formats are `.obj`, `.fbx`, `.glb`
 - The process may take a few minutes depending on the model complexity and server load.
-- **Bone Naming Convention**: Choose between Mixamo, VRoid, or Generic bone naming. Mixamo uses names like "mixamorig:Hips", VRoid uses "J_Bip_C_Hips", and Generic uses "bone_0", "bone_1", etc.
         """)
         
         with gr.Row(equal_height=True):
@@ -387,13 +371,6 @@ def create_app():
                         )
                         random_btn = gr.Button("🔄 Random Seed", variant="secondary", scale=1)
                 
-                bone_naming = gr.Dropdown(
-                    choices=["mixamo", "vroid", "generic"],
-                    value="mixamo",
-                    label="Bone Naming Convention",
-                    info="Choose the bone naming convention for the generated skeleton"
-                )
-                
                 pipeline_btn = gr.Button("🎯 Start Processing", variant="primary", size="lg")
             
             with gr.Column():
@@ -407,7 +384,7 @@ def create_app():
         
         pipeline_btn.click(
             fn=main,
-            inputs=[input_3d_model, seed, bone_naming],
+            inputs=[input_3d_model, seed],
             outputs=[pipeline_skeleton_out, files_to_download]
         )
         
