@@ -150,13 +150,20 @@ class GLBProcessor:
             logger.info(f"Reading GLB file: {input_path}")
             gltf_json, binary_data = self.read_glb(input_path)
             
-            # Log total nodes for debugging
-            total_nodes = len(gltf_json.get('nodes', []))
-            logger.info(f"Found {total_nodes} total nodes in GLB file")
+            # Extract current bone names
+            current_bones = []
+            if 'nodes' in gltf_json:
+                for node in gltf_json['nodes']:
+                    if 'name' in node:
+                        current_bones.append(node['name'])
+            
+            logger.info(f"Found {len(current_bones)} nodes in GLB file")
+            logger.info(f"Current bone order: {current_bones}")
+            logger.info(f"Expected bone order: {self.bone_names}")
             
             # Create bone mapping if not provided
             if bone_mapping is None:
-                bone_mapping = self._create_bone_mapping(gltf_json)
+                bone_mapping = self._create_bone_mapping(current_bones)
             
             # Log the mapping for debugging
             logger.info("Bone mapping:")
@@ -180,85 +187,20 @@ class GLBProcessor:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
-    def _is_bone_node(self, node: dict) -> bool:
-        """Check if a node is a bone node based on its properties."""
-        if 'name' not in node:
-            return False
-            
-        node_name = node['name'].lower()
-        
-        # Skip nodes that are clearly not bones
-        non_bone_names = {'world', 'geometry', 'armature', 'mesh', 'camera', 'light'}
-        for non_bone in non_bone_names:
-            if non_bone in node_name:
-                return False
-        
-        # Explicitly identify bone nodes by name pattern
-        bone_patterns = ['bone_', 'mixamorig:', 'j_bip_']
-        for pattern in bone_patterns:
-            if pattern in node_name:
-                return True
-        
-        # Check if node has bone-like properties
-        # Bones typically have children or are referenced in skins
-        has_children = 'children' in node and len(node['children']) > 0
-        has_translation = 'translation' in node
-        has_rotation = 'rotation' in node
-        has_scale = 'scale' in node
-        
-        # A node is likely a bone if it has children or transform properties
-        # But only if it's not a geometry or mesh node
-        if has_children or has_translation or has_rotation or has_scale:
-            # Additional check: make sure it's not a geometry node
-            if 'mesh' in node or 'camera' in node or 'light' in node:
-                return False
-            return True
-        
-        return False
-
-    def _extract_bone_nodes(self, gltf_json: dict) -> List[tuple]:
-        """Extract bone nodes and their indices from GLTF JSON."""
-        bone_nodes = []
-        
-        if 'nodes' in gltf_json:
-            for i, node in enumerate(gltf_json['nodes']):
-                if self._is_bone_node(node) and 'name' in node:
-                    bone_nodes.append((i, node['name']))
-        
-        # Sort by bone index to maintain proper hierarchy
-        # Extract numeric index from bone names like "bone_0", "bone_1", etc.
-        def get_bone_index(bone_tuple):
-            _, name = bone_tuple
-            if name.startswith('bone_'):
-                try:
-                    return int(name.split('_')[1])
-                except (IndexError, ValueError):
-                    return 999  # Put non-numeric bones at the end
-            return 999  # Put non-bone_* bones at the end
-        
-        bone_nodes.sort(key=get_bone_index)
-        return bone_nodes
-
-    def _create_bone_mapping(self, gltf_json: dict) -> Dict[str, str]:
+    def _create_bone_mapping(self, current_bones: List[str]) -> Dict[str, str]:
         """Create mapping from current bone names to standard names."""
         bone_mapping = {}
         
-        # Extract only bone nodes
-        bone_nodes = self._extract_bone_nodes(gltf_json)
-        current_bones = [name for _, name in bone_nodes]
-        
-        logger.info(f"Found {len(current_bones)} bone nodes out of {len(gltf_json.get('nodes', []))} total nodes")
-        logger.info(f"Bone nodes: {current_bones}")
-        
-        # Map bones sequentially
+        # Preserve the original order of bones from the GLB file
+        # Don't sort them alphabetically as this destroys the hierarchy
         for i, current_name in enumerate(current_bones):
             if i < len(self.bone_names):
                 standard_name = self.bone_names[i]
                 bone_mapping[current_name] = standard_name
-                logger.info(f"Mapping bone {current_name} -> {standard_name}")
+                logger.info(f"Mapping {current_name} -> {standard_name}")
             else:
                 bone_mapping[current_name] = current_name
-                logger.warning(f"No standard name for bone {current_name}, keeping original")
+                logger.warning(f"No standard name for {current_name}, keeping original")
         
         return bone_mapping
 

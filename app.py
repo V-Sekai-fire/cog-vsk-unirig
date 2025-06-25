@@ -82,8 +82,7 @@ def run_inference_python(
     output_file: str, 
     inference_type: str, 
     seed: int = 12345, 
-    npz_dir: str = None,
-    bone_renaming: str = "none"
+    npz_dir: str = None
 ) -> str:
     """
     Unified inference function for both skeleton and skin inference.
@@ -94,7 +93,6 @@ def run_inference_python(
         inference_type: Either "skeleton" or "skin"
         seed: Random seed for reproducible results
         npz_dir: Directory for NPZ files (used for skeleton inference)
-        bone_renaming: Bone renaming option ("none", "mixamo", "vroid")
     
     Returns:
         Path to generated file
@@ -112,20 +110,12 @@ def run_inference_python(
     if inference_type == "skeleton":
         L.seed_everything(seed, workers=True)
     
-    # Load task and model configurations based on inference type and bone renaming
+    # Load task and model configurations based on inference type
     if inference_type == "skeleton":
-        if bone_renaming == "mixamo":
-            task_config_path = "configs/task/quick_inference_skeleton_mixamo_ar_256.yaml"
-            system_config_path = "configs/system/ar_inference_mixamo.yaml"
-        elif bone_renaming == "vroid":
-            task_config_path = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
-            system_config_path = "configs/system/ar_inference_articulationxl.yaml"
-        else:  # none or default
-            task_config_path = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
-            system_config_path = "configs/system/ar_inference_articulationxl.yaml"
-        
+        task_config_path = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
         transform_config_path = "configs/transform/inference_ar_transform.yaml"
         model_config_path = "configs/model/unirig_ar_350m_1024_81920_float32.yaml"
+        system_config_path = "configs/system/ar_inference_articulationxl.yaml"
         tokenizer_config_path = "configs/tokenizer/tokenizer_parts_articulationxl_256.yaml"
         data_name = "raw_data.npz"
     else:  # skin
@@ -290,6 +280,44 @@ def merge_results_python(source_file: str, target_file: str, output_file: str) -
     
     return str(output_path.resolve())
 
+def rename_bones_post_processing(input_file: str, config_file: str = "configs/skeleton/mixamo.yaml") -> str:
+    """
+    Post-processing step to rename bones in GLB files.
+    
+    Args:
+        input_file: Path to the input GLB file
+        config_file: Path to the skeleton configuration file
+        
+    Returns:
+        Path to the processed file (same as input if successful)
+    """
+    try:
+        from src.inference.bone_renamer import rename_bones_in_glb
+        
+        # Only process GLB files
+        if not str(input_file).lower().endswith('.glb'):
+            print(f"Skipping bone renaming for non-GLB file: {input_file}")
+            return input_file
+        
+        # Create output path (same directory, with _renamed suffix)
+        input_path = Path(input_file)
+        output_path = input_path.parent / f"{input_path.stem}_renamed{input_path.suffix}"
+        
+        # Rename bones
+        success = rename_bones_in_glb(str(input_file), str(output_path), config_file)
+        
+        if success:
+            print(f"Successfully renamed bones in {input_file} -> {output_path}")
+            return str(output_path)
+        else:
+            print(f"Failed to rename bones in {input_file}, keeping original")
+            return input_file
+            
+    except Exception as e:
+        print(f"Warning: Bone renaming failed: {e}")
+        print("Continuing with original file...")
+        return input_file
+
 @spaces.GPU()
 def main(input_file: str, seed: int = 12345, bone_renaming: str = "none") -> Tuple[str, list]:
     """
@@ -333,14 +361,24 @@ def main(input_file: str, seed: int = 12345, bone_renaming: str = "none") -> Tup
     # Step 1: Generate skeleton
     intermediate_skeleton_file = input_model_dir / f"{file_stem}_skeleton.fbx"
     final_skeleton_file = input_model_dir / f"{file_stem}_skeleton_only{input_file.suffix}"
-    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed, bone_renaming=bone_renaming)
+    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed)
     merge_results_python(intermediate_skeleton_file, input_file, final_skeleton_file)
     
     # Step 2: Generate skinning and Merge everything together
     intermediate_skin_file = input_model_dir / f"{file_stem}_skin.fbx"
     final_skin_file = input_model_dir / f"{file_stem}_skeleton_and_skinning{input_file.suffix}"
-    run_inference_python(intermediate_skeleton_file, intermediate_skin_file, "skin", bone_renaming=bone_renaming)
+    run_inference_python(intermediate_skeleton_file, intermediate_skin_file, "skin")
     merge_results_python(intermediate_skin_file, input_file, final_skin_file)
+    
+    # Step 3: Apply bone renaming if requested (post-processing)
+    if bone_renaming != "none":
+        config_file = f"configs/skeleton/{bone_renaming}.yaml"
+        if Path(config_file).exists():
+            print(f"Applying {bone_renaming} bone renaming as post-processing...")
+            final_skeleton_file = rename_bones_post_processing(str(final_skeleton_file), config_file)
+            final_skin_file = rename_bones_post_processing(str(final_skin_file), config_file)
+        else:
+            print(f"Warning: Configuration file {config_file} not found. Skipping bone renaming.")
     
     final_file = str(final_skin_file)
     output_files = [str(final_skeleton_file), str(final_skin_file)]
