@@ -10,5 +10,5 @@ generate_kwargs:
   repetition_penalty: 3.0
   temperature: 1.5 # must be a float
   no_cls: False
-  assign_cls: articulationxl
+  assign_cls: mixamo
   use_dir_cls: False
