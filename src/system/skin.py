@@ -71,6 +71,7 @@ class SkinWriter(BasePredictionWriter):
         self.add_num            = kwargs.get('add_num', False)
         self.export_npz         = kwargs.get('export_npz', True)
         self.export_fbx         = kwargs.get('export_fbx', False)
+        self.custom_bone_names  = kwargs.get('custom_bone_names', None)
         if order_config is not None:
             self.order = get_order(config=order_config)
         else:
@@ -162,6 +163,8 @@ class SkinWriter(BasePredictionWriter):
                 names = RawData.load(path=os.path.join(paths[id], data_names[id])).names
                 if names is None:
                     names = [f"bone_{i}" for i in range(J)]
+                if self.custom_bone_names is not None:
+                    names = self.custom_bone_names
                 if self.user_mode:
                     if self.output_name is not None:
                         path = self.output_name

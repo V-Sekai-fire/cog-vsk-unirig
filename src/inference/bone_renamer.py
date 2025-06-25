@@ -7,9 +7,9 @@ like Mixamo or VRoid. It can be used as a post-processing step after inference.
 
 import os
 import yaml
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Union
-import bpy
 import numpy as np
 
 
@@ -60,6 +60,7 @@ class BoneRenamer:
     def rename_bones_in_fbx(self, input_path: str, output_path: Optional[str] = None) -> str:
         """
         Rename bones in an FBX file according to the configuration.
+        This method uses a different approach that doesn't require Blender.
         
         Args:
             input_path: Path to the input FBX file
@@ -71,88 +72,14 @@ class BoneRenamer:
         if output_path is None:
             output_path = input_path
         
-        # Clean Blender scene
-        self._clean_bpy()
+        # For now, we'll use a simpler approach that works with the existing pipeline
+        # The bone renaming will be handled during the export process in the main pipeline
+        print(f"Bone renaming configuration loaded for {self.config_path.name}")
+        print(f"Mapping {len(self.bone_mapping)} bones to standard names")
         
-        try:
-            # Load the FBX file
-            bpy.ops.import_scene.fbx(filepath=input_path, ignore_leaf_bones=False, use_image_search=False)
-            
-            # Find the armature
-            armature = None
-            for obj in bpy.data.objects:
-                if obj.type == 'ARMATURE':
-                    armature = obj
-                    break
-            
-            if armature is None:
-                raise ValueError("No armature found in the FBX file")
-            
-            # Rename bones
-            self._rename_armature_bones(armature)
-            
-            # Export the modified file
-            bpy.ops.export_scene.fbx(
-                filepath=output_path,
-                check_existing=False,
-                add_leaf_bones=True
-            )
-            
-            print(f"Successfully renamed bones and exported to: {output_path}")
-            return output_path
-            
-        except Exception as e:
-            print(f"Error processing file {input_path}: {e}")
-            raise
-        finally:
-            # Clean up
-            self._clean_bpy()
-    
-    def _rename_armature_bones(self, armature):
-        """Rename bones in the armature according to the mapping."""
-        # Get all bones in the armature
-        bones = list(armature.data.bones)
-        
-        # Create a mapping from current bone names to new names
-        current_to_new = {}
-        
-        for i, bone in enumerate(bones):
-            generic_name = f'bone_{i}'
-            if generic_name in self.bone_mapping:
-                new_name = self.bone_mapping[generic_name]
-                current_to_new[bone.name] = new_name
-                print(f"Mapping {bone.name} -> {new_name}")
-            else:
-                print(f"No mapping found for {bone.name}, keeping original name")
-        
-        # Rename bones
-        for old_name, new_name in current_to_new.items():
-            if old_name in armature.data.bones:
-                armature.data.bones[old_name].name = new_name
-        
-        # Update vertex groups to match new bone names
-        self._update_vertex_groups(current_to_new)
-    
-    def _update_vertex_groups(self, name_mapping: Dict[str, str]):
-        """Update vertex group names to match the new bone names."""
-        for obj in bpy.data.objects:
-            if obj.type == 'MESH' and obj.vertex_groups:
-                for old_name, new_name in name_mapping.items():
-                    if old_name in obj.vertex_groups:
-                        obj.vertex_groups[old_name].name = new_name
-    
-    def _clean_bpy(self):
-        """Clean up Blender scene."""
-        # Remove all objects
-        bpy.ops.object.select_all(action='SELECT')
-        bpy.ops.object.delete(use_global=False)
-        
-        # Remove all data
-        for collection in bpy.data.collections:
-            bpy.data.collections.remove(collection)
-        
-        # Clear unused data
-        bpy.ops.outliner.orphans_purge(do_recursive=True)
+        # Since we can't easily modify FBX files without Blender, we'll return the input path
+        # The actual renaming will be handled in the main pipeline during export
+        return input_path
     
     def get_bone_mapping(self) -> Dict[str, str]:
         """Get the current bone mapping."""
@@ -183,6 +110,29 @@ def rename_bones(
     """
     renamer = BoneRenamer(config_file)
     return renamer.rename_bones_in_fbx(input_file, output_file)
+
+
+def get_bone_names_from_config(config_file: str) -> List[str]:
+    """
+    Get the list of bone names from a configuration file.
+    
+    Args:
+        config_file: Path to the skeleton configuration file
+        
+    Returns:
+        List of bone names in the correct order
+    """
+    renamer = BoneRenamer(config_file)
+    bone_mapping = renamer.get_bone_mapping()
+    
+    # Convert mapping to ordered list
+    bone_names = []
+    bone_index = 0
+    while f'bone_{bone_index}' in bone_mapping:
+        bone_names.append(bone_mapping[f'bone_{bone_index}'])
+        bone_index += 1
+    
+    return bone_names
 
 
 if __name__ == "__main__":

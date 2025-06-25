@@ -73,6 +73,7 @@ class ARWriter(BasePredictionWriter):
         self.export_obj         = kwargs.get('export_obj', None)
         self.export_fbx         = kwargs.get('export_fbx', None)
         self.export_pc          = kwargs.get('export_pc', None)
+        self.custom_bone_names  = kwargs.get('custom_bone_names', None)
         if order_config is not None:
             self.order = get_order(config=order_config)
         else:
@@ -143,7 +144,7 @@ class ARWriter(BasePredictionWriter):
                 parents=detokenize_output.parents,
                 skin=None,
                 no_skin=detokenize_output.no_skin,
-                names=detokenize_output.names,
+                names=detokenize_output.names if self.custom_bone_names is None else self.custom_bone_names,
                 matrix_local=None,
                 path=None,
                 cls=detokenize_output.cls,

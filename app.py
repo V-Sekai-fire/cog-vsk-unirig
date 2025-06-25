@@ -2,7 +2,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional, List
 
 import gradio as gr
 import lightning as L
@@ -82,7 +82,8 @@ def run_inference_python(
     output_file: str, 
     inference_type: str, 
     seed: int = 12345, 
-    npz_dir: str = None
+    npz_dir: str = None,
+    custom_bone_names: Optional[List[str]] = None
 ) -> str:
     """
     Unified inference function for both skeleton and skin inference.
@@ -93,6 +94,7 @@ def run_inference_python(
         inference_type: Either "skeleton" or "skin"
         seed: Random seed for reproducible results
         npz_dir: Directory for NPZ files (used for skeleton inference)
+        custom_bone_names: Optional list of custom bone names to use during export
     
     Returns:
         Path to generated file
@@ -192,11 +194,17 @@ def run_inference_python(
         writer_config['output_dir'] = str(Path(output_file).parent)
         writer_config['output_name'] = Path(output_file).name
         writer_config['user_mode'] = False  # Enable NPZ export for skeleton
+        # Add custom bone names to writer config if provided
+        if custom_bone_names is not None:
+            writer_config['custom_bone_names'] = custom_bone_names
     else:  # skin
         writer_config['npz_dir'] = str(skeleton_npz_dir)
         writer_config['output_name'] = str(output_file)
         writer_config['user_mode'] = True
         writer_config['export_fbx'] = True
+        # Add custom bone names to writer config if provided
+        if custom_bone_names is not None:
+            writer_config['custom_bone_names'] = custom_bone_names
     
     print(f"Writer config for {inference_type}: {writer_config}")
     callbacks.append(get_writer(**writer_config, order_config=predict_transform_config.order_config))
@@ -292,12 +300,41 @@ def rename_bones_post_processing(input_file: str, config_file: str = "configs/sk
         Path to the processed file (same as input if successful)
     """
     try:
-        from src.inference.bone_renamer import rename_bones
-        return rename_bones(input_file, None, config_file)
+        from src.inference.bone_renamer import get_bone_names_from_config
+        bone_names = get_bone_names_from_config(config_file)
+        print(f"Loaded {len(bone_names)} bone names from {config_file}")
+        return input_file
     except Exception as e:
         print(f"Warning: Bone renaming failed: {e}")
         print("Continuing with original bone names...")
         return input_file
+
+def get_bone_names_for_export(bone_renaming: str) -> Optional[List[str]]:
+    """
+    Get bone names for export based on the renaming option.
+    
+    Args:
+        bone_renaming: Bone renaming option ("none", "mixamo", "vroid")
+        
+    Returns:
+        List of bone names or None if no renaming
+    """
+    if bone_renaming == "none":
+        return None
+    
+    try:
+        from src.inference.bone_renamer import get_bone_names_from_config
+        config_file = f"configs/skeleton/{bone_renaming}.yaml"
+        if Path(config_file).exists():
+            bone_names = get_bone_names_from_config(config_file)
+            print(f"Using {bone_renaming} bone names: {len(bone_names)} bones")
+            return bone_names
+        else:
+            print(f"Warning: Configuration file {config_file} not found. Using default bone names.")
+            return None
+    except Exception as e:
+        print(f"Warning: Failed to load bone names: {e}. Using default bone names.")
+        return None
 
 @spaces.GPU()
 def main(input_file: str, seed: int = 12345, bone_renaming: str = "none") -> Tuple[str, list]:
@@ -335,6 +372,9 @@ def main(input_file: str, seed: int = 12345, bone_renaming: str = "none") -> Tup
     input_file = input_model_dir / input_file.name
     print(f"New input file path: {input_file}")
     
+    # Get custom bone names if renaming is requested
+    custom_bone_names = get_bone_names_for_export(bone_renaming)
+    
     # Initialize file paths and output list
     output_files = []
     final_file = None
@@ -342,24 +382,14 @@ def main(input_file: str, seed: int = 12345, bone_renaming: str = "none") -> Tup
     # Step 1: Generate skeleton
     intermediate_skeleton_file = input_model_dir / f"{file_stem}_skeleton.fbx"
     final_skeleton_file = input_model_dir / f"{file_stem}_skeleton_only{input_file.suffix}"
-    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed)
+    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed, custom_bone_names=custom_bone_names)
     merge_results_python(intermediate_skeleton_file, input_file, final_skeleton_file)
     
     # Step 2: Generate skinning and Merge everything together
     intermediate_skin_file = input_model_dir / f"{file_stem}_skin.fbx"
     final_skin_file = input_model_dir / f"{file_stem}_skeleton_and_skinning{input_file.suffix}"
-    run_inference_python(intermediate_skeleton_file, intermediate_skin_file, "skin")
+    run_inference_python(intermediate_skeleton_file, intermediate_skin_file, "skin", custom_bone_names=custom_bone_names)
     merge_results_python(intermediate_skin_file, input_file, final_skin_file)
-    
-    # Step 3: Apply bone renaming if requested
-    if bone_renaming != "none":
-        config_file = f"configs/skeleton/{bone_renaming}.yaml"
-        if Path(config_file).exists():
-            print(f"Applying {bone_renaming} bone renaming...")
-            final_skeleton_file = rename_bones_post_processing(str(final_skeleton_file), config_file)
-            final_skin_file = rename_bones_post_processing(str(final_skin_file), config_file)
-        else:
-            print(f"Warning: Configuration file {config_file} not found. Skipping bone renaming.")
     
     final_file = str(final_skin_file)
     output_files = [str(final_skeleton_file), str(final_skin_file)]
