@@ -280,14 +280,34 @@ def merge_results_python(source_file: str, target_file: str, output_file: str) -
     
     return str(output_path.resolve())
 
+def rename_bones_post_processing(input_file: str, config_file: str = "configs/skeleton/mixamo.yaml") -> str:
+    """
+    Post-processing step to rename bones in FBX files.
+    
+    Args:
+        input_file: Path to the input FBX file
+        config_file: Path to the skeleton configuration file
+        
+    Returns:
+        Path to the processed file (same as input if successful)
+    """
+    try:
+        from src.inference.bone_renamer import rename_bones
+        return rename_bones(input_file, None, config_file)
+    except Exception as e:
+        print(f"Warning: Bone renaming failed: {e}")
+        print("Continuing with original bone names...")
+        return input_file
+
 @spaces.GPU()
-def main(input_file: str, seed: int = 12345) -> Tuple[str, list]:
+def main(input_file: str, seed: int = 12345, bone_renaming: str = "none") -> Tuple[str, list]:
     """
     Run the rigging pipeline based on selected mode.
     
     Args:
         input_file: Path to the input 3D model file
         seed: Random seed for reproducible results
+        bone_renaming: Bone renaming option ("none", "mixamo", "vroid")
         
     Returns:
         Tuple of (final_file_path, list_of_intermediate_files)
@@ -331,6 +351,16 @@ def main(input_file: str, seed: int = 12345) -> Tuple[str, list]:
     run_inference_python(intermediate_skeleton_file, intermediate_skin_file, "skin")
     merge_results_python(intermediate_skin_file, input_file, final_skin_file)
     
+    # Step 3: Apply bone renaming if requested
+    if bone_renaming != "none":
+        config_file = f"configs/skeleton/{bone_renaming}.yaml"
+        if Path(config_file).exists():
+            print(f"Applying {bone_renaming} bone renaming...")
+            final_skeleton_file = rename_bones_post_processing(str(final_skeleton_file), config_file)
+            final_skin_file = rename_bones_post_processing(str(final_skin_file), config_file)
+        else:
+            print(f"Warning: Configuration file {config_file} not found. Skipping bone renaming.")
+    
     final_file = str(final_skin_file)
     output_files = [str(final_skeleton_file), str(final_skin_file)]
 
@@ -371,6 +401,13 @@ def create_app():
                         )
                         random_btn = gr.Button("🔄 Random Seed", variant="secondary", scale=1)
                 
+                bone_renaming = gr.Dropdown(
+                    choices=["none", "mixamo", "vroid"],
+                    value="none",
+                    label="Bone Renaming",
+                    info="Choose bone naming convention (none = keep generic names like bone_0, bone_1, etc.)"
+                )
+                
                 pipeline_btn = gr.Button("🎯 Start Processing", variant="primary", size="lg")
             
             with gr.Column():
@@ -384,7 +421,7 @@ def create_app():
         
         pipeline_btn.click(
             fn=main,
-            inputs=[input_3d_model, seed],
+            inputs=[input_3d_model, seed, bone_renaming],
             outputs=[pipeline_skeleton_out, files_to_download]
         )
         
