@@ -158,10 +158,17 @@ class GLBProcessor:
                         current_bones.append(node['name'])
             
             logger.info(f"Found {len(current_bones)} nodes in GLB file")
+            logger.info(f"Current bone order: {current_bones}")
+            logger.info(f"Expected bone order: {self.bone_names}")
             
             # Create bone mapping if not provided
             if bone_mapping is None:
                 bone_mapping = self._create_bone_mapping(current_bones)
+            
+            # Log the mapping for debugging
+            logger.info("Bone mapping:")
+            for old_name, new_name in bone_mapping.items():
+                logger.info(f"  {old_name} -> {new_name}")
             
             # Rename bones
             logger.info("Renaming bones...")
@@ -183,9 +190,10 @@ class GLBProcessor:
     def _create_bone_mapping(self, current_bones: List[str]) -> Dict[str, str]:
         """Create mapping from current bone names to standard names."""
         bone_mapping = {}
-        sorted_current_bones = sorted(current_bones)
         
-        for i, current_name in enumerate(sorted_current_bones):
+        # Preserve the original order of bones from the GLB file
+        # Don't sort them alphabetically as this destroys the hierarchy
+        for i, current_name in enumerate(current_bones):
             if i < len(self.bone_names):
                 standard_name = self.bone_names[i]
                 bone_mapping[current_name] = standard_name
