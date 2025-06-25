@@ -2,7 +2,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple
 
 import gradio as gr
 import lightning as L
@@ -280,53 +280,14 @@ def merge_results_python(source_file: str, target_file: str, output_file: str) -
     
     return str(output_path.resolve())
 
-def rename_bones_post_processing(input_file: str, config_file: str = "configs/skeleton/mixamo.yaml") -> str:
-    """
-    Post-processing step to rename bones in GLB files.
-    
-    Args:
-        input_file: Path to the input GLB file
-        config_file: Path to the skeleton configuration file
-        
-    Returns:
-        Path to the processed file (same as input if successful)
-    """
-    try:
-        from src.inference.bone_renamer import rename_bones_in_glb
-        
-        # Only process GLB files
-        if not str(input_file).lower().endswith('.glb'):
-            print(f"Skipping bone renaming for non-GLB file: {input_file}")
-            return input_file
-        
-        # Create output path (same directory, with _renamed suffix)
-        input_path = Path(input_file)
-        output_path = input_path.parent / f"{input_path.stem}_renamed{input_path.suffix}"
-        
-        # Rename bones
-        success = rename_bones_in_glb(str(input_file), str(output_path), config_file)
-        
-        if success:
-            print(f"Successfully renamed bones in {input_file} -> {output_path}")
-            return str(output_path)
-        else:
-            print(f"Failed to rename bones in {input_file}, keeping original")
-            return input_file
-            
-    except Exception as e:
-        print(f"Warning: Bone renaming failed: {e}")
-        print("Continuing with original file...")
-        return input_file
-
 @spaces.GPU()
-def main(input_file: str, seed: int = 12345, bone_renaming: str = "none") -> Tuple[str, list]:
+def main(input_file: str, seed: int = 12345) -> Tuple[str, list]:
     """
     Run the rigging pipeline based on selected mode.
     
     Args:
         input_file: Path to the input 3D model file
         seed: Random seed for reproducible results
-        bone_renaming: Bone renaming option ("none", "mixamo", "vroid")
         
     Returns:
         Tuple of (final_file_path, list_of_intermediate_files)
@@ -370,16 +331,6 @@ def main(input_file: str, seed: int = 12345, bone_renaming: str = "none") -> Tup
     run_inference_python(intermediate_skeleton_file, intermediate_skin_file, "skin")
     merge_results_python(intermediate_skin_file, input_file, final_skin_file)
     
-    # Step 3: Apply bone renaming if requested (post-processing)
-    if bone_renaming != "none":
-        config_file = f"configs/skeleton/{bone_renaming}.yaml"
-        if Path(config_file).exists():
-            print(f"Applying {bone_renaming} bone renaming as post-processing...")
-            final_skeleton_file = rename_bones_post_processing(str(final_skeleton_file), config_file)
-            final_skin_file = rename_bones_post_processing(str(final_skin_file), config_file)
-        else:
-            print(f"Warning: Configuration file {config_file} not found. Skipping bone renaming.")
-    
     final_file = str(final_skin_file)
     output_files = [str(final_skeleton_file), str(final_skin_file)]
 
@@ -420,13 +371,6 @@ def create_app():
                         )
                         random_btn = gr.Button("🔄 Random Seed", variant="secondary", scale=1)
                 
-                bone_renaming = gr.Dropdown(
-                    choices=["none", "mixamo", "vroid"],
-                    value="none",
-                    label="Bone Renaming",
-                    info="Choose bone naming convention (only works with GLB output, none = keep generic names)"
-                )
-                
                 pipeline_btn = gr.Button("🎯 Start Processing", variant="primary", size="lg")
             
             with gr.Column():
@@ -440,7 +384,7 @@ def create_app():
         
         pipeline_btn.click(
             fn=main,
-            inputs=[input_3d_model, seed, bone_renaming],
+            inputs=[input_3d_model, seed],
             outputs=[pipeline_skeleton_out, files_to_download]
         )
         
