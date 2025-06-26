@@ -88,9 +88,11 @@ class ARWriter(BasePredictionWriter):
             trainer.predict_loop.run()
 
     def write_on_batch_end(self, trainer, pl_module: ARSystem, prediction: List[Dict], batch_indices, batch, batch_idx, dataloader_idx):
+        print(f"ARWriter.write_on_batch_end called with {len(prediction)} predictions")
         assert 'path' in batch
         paths = batch['path']
         detokenize_output_list: List[DetokenizeOutput] = prediction
+        print(f"Processing {len(detokenize_output_list)} detokenize outputs")
         vertices = batch['vertices']
         
         origin_vertices = batch['origin_vertices']
@@ -114,6 +116,7 @@ class ARWriter(BasePredictionWriter):
             num_faces = num_faces.detach().cpu().numpy()
 
         for (id, detokenize_output) in enumerate(detokenize_output_list):
+            print(f"Processing detokenize output {id}: {type(detokenize_output)}")
             assert isinstance(detokenize_output, DetokenizeOutput), f"expect item of the list to be DetokenizeOutput, found: {type(detokenize_output)}"
             def make_path(save_name: str, suffix: str, trim: bool=False):
                 if trim:
@@ -157,9 +160,15 @@ class ARWriter(BasePredictionWriter):
                 raw_data.export_pc(path=make_path(self.export_pc, 'obj'))
             if self.export_fbx is not None:
                 if not self.user_mode:
-                    raw_data.export_fbx(path=make_path(self.export_fbx, 'fbx'))
+                    fbx_path = make_path(self.export_fbx, 'fbx')
+                    print(f"ARWriter: Exporting FBX to {fbx_path}")
+                    raw_data.export_fbx(path=fbx_path)
+                    print(f"ARWriter: FBX export completed for {fbx_path}")
                 else:
                     if self.output_name is not None:
+                        print(f"ARWriter: Exporting FBX to {self.output_name} (user mode)")
                         raw_data.export_fbx(path=self.output_name)
                     else:
-                        raw_data.export_fbx(path=make_path(self.export_fbx, 'fbx', trim=True))
+                        fbx_path = make_path(self.export_fbx, 'fbx', trim=True)
+                        print(f"ARWriter: Exporting FBX to {fbx_path} (user mode, trim)")
+                        raw_data.export_fbx(path=fbx_path)
