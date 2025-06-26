@@ -230,7 +230,32 @@ def run_inference_python(
             else:
                 all_files = list(Path(output_file).parent.rglob("*"))
                 print(f"Available files: {[str(f) for f in all_files]}")
-                raise RuntimeError(f"Skeleton FBX file not found. Expected at: {actual_output_file}")
+                
+                # Try to find any FBX files
+                fbx_files = list(Path(output_file).parent.rglob("*.fbx"))
+                print(f"FBX files found: {[str(f) for f in fbx_files]}")
+                
+                # Try to find skeleton-related files
+                skeleton_files = list(Path(output_file).parent.rglob("*skeleton*"))
+                print(f"Skeleton-related files: {[str(f) for f in skeleton_files]}")
+                
+                # Check for any GLB files (might be generated instead of FBX)
+                glb_files = list(Path(output_file).parent.rglob("*.glb"))
+                print(f"GLB files found: {[str(f) for f in glb_files]}")
+                
+                # Check for files in subdirectories that match input name
+                input_name_stem = Path(input_file).stem
+                input_subdir_files = list(Path(output_file).parent.rglob(f"{input_name_stem}/*"))
+                print(f"Files in {input_name_stem} subdirectory: {[str(f) for f in input_subdir_files]}")
+                
+                if fbx_files:
+                    print(f"Using first available FBX file: {fbx_files[0]}")
+                    actual_output_file = fbx_files[0]
+                elif glb_files:
+                    print(f"Using first available GLB file: {glb_files[0]}")
+                    actual_output_file = glb_files[0]
+                else:
+                    raise RuntimeError(f"No skeleton file found. Expected FBX at: {actual_output_file}")
         
         # Copy to the expected output location
         if actual_output_file != Path(output_file):
