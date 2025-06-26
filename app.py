@@ -192,7 +192,6 @@ def run_inference_python(
         writer_config['output_dir'] = str(Path(output_file).parent)
         writer_config['output_name'] = Path(output_file).name
         writer_config['user_mode'] = False  # Enable NPZ export for skeleton
-        print(f"Writer config for skeleton: {writer_config}")
     else:  # skin
         writer_config['npz_dir'] = str(skeleton_npz_dir)
         writer_config['output_name'] = str(output_file)
