@@ -50,13 +50,9 @@ class ARSystem(L.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
         try:
             prediction: List[DetokenizeOutput] = self._predict_step(batch=batch, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
-            print(f"ARSystem.predict_step: Successfully generated {len(prediction)} predictions")
             return prediction
         except Exception as e:
-            print(f"ARSystem.predict_step: Exception caught: {str(e)}")
-            print(f"ARSystem.predict_step: Exception type: {type(e).__name__}")
-            import traceback
-            print(f"ARSystem.predict_step: Full traceback:\n{traceback.format_exc()}")
+            print(str(e))
             return []
     
 class ARWriter(BasePredictionWriter):

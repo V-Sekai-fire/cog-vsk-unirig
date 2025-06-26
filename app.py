@@ -112,10 +112,10 @@ def run_inference_python(
     
     # Load task and model configurations based on inference type
     if inference_type == "skeleton":
-        task_config_path = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
+        task_config_path = "configs/task/quick_inference_skeleton_vroid_ar_256.yaml"
         transform_config_path = "configs/transform/inference_ar_transform.yaml"
         model_config_path = "configs/model/unirig_ar_350m_1024_81920_float32.yaml"
-        system_config_path = "configs/system/ar_inference_articulationxl.yaml"
+        system_config_path = "configs/system/ar_inference_vroid.yaml"
         tokenizer_config_path = "configs/tokenizer/tokenizer_parts_articulationxl_256.yaml"
         data_name = "raw_data.npz"
     else:  # skin
@@ -159,9 +159,7 @@ def run_inference_python(
     if inference_type == "skeleton":
         tokenizer_config = TokenizerConfig.parse(config=Box(yaml.safe_load(open(tokenizer_config_path, 'r'))))
         tokenizer = get_tokenizer(config=tokenizer_config)
-        print(f"Tokenizer config: {tokenizer_config}")
         model_config = Box(yaml.safe_load(open(model_config_path, 'r')))
-        print(f"Model config: {model_config}")
         model = get_model(tokenizer=tokenizer, **model_config)
     else:  # skin
         tokenizer_config = None
