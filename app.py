@@ -209,6 +209,7 @@ def run_inference_python(
     if inference_type == "skeleton":
         system_config.generate_kwargs.assign_cls = skeleton_type
         print(f"Using skeleton type: {skeleton_type}")
+        print(f"Full system config generate_kwargs: {system_config.generate_kwargs}")
     
     system = get_system(**system_config, model=model, steps_per_epoch=1)
     

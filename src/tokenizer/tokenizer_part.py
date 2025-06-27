@@ -54,9 +54,13 @@ class TokenizerPart(TokenizerSpec):
         assert len(self.cls_token_to_name) == len(self.cls_token_id), 'names with same token found in cls_token_id'
 
     def cls_name_to_token(self, cls: str) -> int:
+        print(f"TokenizerPart.cls_name_to_token: Looking for cls='{cls}' in {self.cls_token_id}")
         if cls not in self.cls_token_id:
+            print(f"TokenizerPart.cls_name_to_token: '{cls}' not found, returning token_id_cls_none")
             return self.token_id_cls_none
-        return self.cls_token_id[cls]
+        token = self.cls_token_id[cls]
+        print(f"TokenizerPart.cls_name_to_token: Found '{cls}' -> token {token}")
+        return token
     
     def part_name_to_token(self, part: str) -> int:
         assert part in self.parts_token_id, f"do not find part name    `{part}` in tokenizer"

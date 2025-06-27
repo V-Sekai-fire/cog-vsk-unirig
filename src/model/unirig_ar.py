@@ -192,6 +192,7 @@ class UniRigAR(ModelSpec):
                 _cls = None
             elif assign_cls is not None:
                 _cls = assign_cls
+                print(f"UniRigAR: Using assigned skeleton type: {_cls}")
             elif use_dir_cls:
                 _cls = paths[i].removeprefix('./').split('/')[0]
             else:
