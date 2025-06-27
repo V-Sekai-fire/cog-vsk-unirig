@@ -82,7 +82,8 @@ def run_inference_python(
     output_file: str, 
     inference_type: str, 
     seed: int = 12345, 
-    npz_dir: str = None
+    npz_dir: str = None,
+    skeleton_type: str = "articulationxl"
 ) -> str:
     """
     Unified inference function for both skeleton and skin inference.
@@ -203,6 +204,12 @@ def run_inference_python(
     
     # Get system
     system_config = Box(yaml.safe_load(open(system_config_path, 'r')))
+    
+    # Dynamically set skeleton type for skeleton inference
+    if inference_type == "skeleton":
+        system_config.generate_kwargs.assign_cls = skeleton_type
+        print(f"Using skeleton type: {skeleton_type}")
+    
     system = get_system(**system_config, model=model, steps_per_epoch=1)
     
     # Setup trainer
@@ -281,7 +288,7 @@ def merge_results_python(source_file: str, target_file: str, output_file: str) -
     return str(output_path.resolve())
 
 @spaces.GPU()
-def main(input_file: str, seed: int = 12345) -> Tuple[str, list]:
+def main(input_file: str, skeleton_type: str = "articulationxl", seed: int = 12345) -> Tuple[str, list]:
     """
     Run the rigging pipeline based on selected mode.
     
@@ -322,7 +329,7 @@ def main(input_file: str, seed: int = 12345) -> Tuple[str, list]:
     # Step 1: Generate skeleton
     intermediate_skeleton_file = input_model_dir / f"{file_stem}_skeleton.fbx"
     final_skeleton_file = input_model_dir / f"{file_stem}_skeleton_only{input_file.suffix}"
-    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed)
+    run_inference_python(input_file, intermediate_skeleton_file, "skeleton", seed, skeleton_type=skeleton_type)
     merge_results_python(intermediate_skeleton_file, input_file, final_skeleton_file)
     
     # Step 2: Generate skinning and Merge everything together
@@ -363,6 +370,12 @@ def create_app():
                 input_3d_model = gr.Model3D(label="Upload 3D Model")
                 
                 with gr.Group():
+                    skeleton_type = gr.Dropdown(
+                        choices=["articulationxl", "vroid"],
+                        value="articulationxl",
+                        label="Skeleton Type",
+                        info="articulationxl: Generic bone names (bone_0, bone_1...) | vroid: Descriptive names (J_Bip_C_Hips, J_Bip_C_Spine...)"
+                    )
                     with gr.Row(equal_height=True):
                         seed = gr.Number(
                             value=int(torch.randint(0, 100000, (1,)).item()),
@@ -384,7 +397,7 @@ def create_app():
         
         pipeline_btn.click(
             fn=main,
-            inputs=[input_3d_model, seed],
+            inputs=[input_3d_model, skeleton_type, seed],
             outputs=[pipeline_skeleton_out, files_to_download]
         )
         
