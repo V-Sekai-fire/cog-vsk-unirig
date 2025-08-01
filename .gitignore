@@ -183,3 +183,5 @@ cython_debug/
 .gradio/
 lightning_logs/
 logs/
+
+.cog
