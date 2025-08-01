@@ -8,7 +8,7 @@ build:
   
   gpu: true
 
-  cuda: "12.6"
+  cuda: "12.4"
   
   system_packages:
     - "libegl1-mesa-dev"
@@ -36,11 +36,6 @@ build:
     - "ln -s /opt/blender-4.5.1-linux-x64/blender /usr/local/bin/blender"
     - "export BLENDER_PATH=/opt/blender-4.5.1-linux-x64"
     - "export PATH=$BLENDER_PATH:$PATH"
-    - "pip install spconv-cu126"
-    - "pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-2.7.1+cu126.html --no-cache-dir"
-    - "wget -q https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.2/flash_attn-2.8.2+cu12torch2.7cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
-    - "pip install --no-dependencies flash_attn-2.8.2+cu12torch2.7cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
-    - "rm flash_attn-2.8.2+cu12torch2.7cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
     - "rm /tmp/blender.tar.xz"
 
 predict: "predict.py:Predictor"

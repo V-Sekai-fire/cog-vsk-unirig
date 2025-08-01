@@ -35,7 +35,7 @@ def install_runtime_dependencies():
         cuda_version = torch.version.cuda
         
         if cuda_version:
-            spconv_version = "-cu126"
+            spconv_version = "-cu124"
             cuda_version = f"cu{cuda_version.replace('.', '')}"
         else:
             spconv_version = ""
