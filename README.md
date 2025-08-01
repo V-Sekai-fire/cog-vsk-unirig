@@ -111,7 +111,7 @@ import replicate
 
 # Basic rigging with default settings
 output = replicate.run(
-    "your-username/unirig:latest",
+    "fire/unirig:latest",
     input={
         "input_file": open("character.fbx", "rb"),
         "skeleton_type": "articulationxl",
@@ -121,7 +121,7 @@ output = replicate.run(
 
 # Skeleton-only generation with VRoid naming
 output = replicate.run(
-    "your-username/unirig:latest",
+    "fire/unirig:latest",
     input={
         "input_file": open("avatar.vrm", "rb"),
         "skeleton_type": "vroid",
