@@ -121,14 +121,23 @@ class Predictor(BasePredictor):
 
     def run_inference_python(
         self,
-        input_file: str, 
-        output_file: str, 
+        input_model_path: str, 
         inference_type: str, 
         seed: int = 12345, 
-        npz_dir: str = None,
         skeleton_type: str = "articulationxl"
     ) -> str:
-        """Unified inference function for both skeleton and skin inference."""
+        """
+        Unified inference function for both skeleton and skin inference.
+        
+        Args:
+            input_model_path: Path to input 3D model file (GLB, FBX, GLTF, VRM, etc.)
+            inference_type: Type of inference ("skeleton" or "skin")
+            seed: Random seed for reproducible results
+            skeleton_type: Type of skeleton to generate for skeleton inference
+            
+        Returns:
+            Path to temporary output file containing the result
+        """
         from src.data.datapath import Datapath
         from src.data.dataset import DatasetConfig, UniRigDatasetModule
         from src.data.transform import TransformConfig
@@ -165,16 +174,17 @@ class Predictor(BasePredictor):
         with open(task_config_path, 'r') as f:
             task = Box(yaml.safe_load(f))
         
+        # Create temporary output file
+        temp_output = tempfile.mktemp(suffix=".fbx")
+        
         # Setup data directory and datapath
         if inference_type == "skeleton":
-            if npz_dir is None:
-                npz_dir = Path(output_file).parent / "npz"
-            npz_dir = Path(npz_dir)
+            npz_dir = Path(temp_output).parent / "npz"
             npz_dir.mkdir(exist_ok=True)
-            npz_data_dir = self.extract_mesh_python(input_file, npz_dir)
+            npz_data_dir = self.extract_mesh_python(input_model_path, npz_dir)
             datapath = Datapath(files=[npz_data_dir], cls=None)
         else:  # skin
-            skeleton_work_dir = Path(input_file).parent
+            skeleton_work_dir = Path(input_model_path).parent
             all_npz_files = list(skeleton_work_dir.rglob("**/*.npz"))
             if not all_npz_files:
                 raise RuntimeError(f"No NPZ files found for skin inference in {skeleton_work_dir}")
@@ -219,12 +229,12 @@ class Predictor(BasePredictor):
         
         if inference_type == "skeleton":
             writer_config['npz_dir'] = str(npz_dir)
-            writer_config['output_dir'] = str(Path(output_file).parent)
-            writer_config['output_name'] = Path(output_file).name
+            writer_config['output_dir'] = str(Path(temp_output).parent)
+            writer_config['output_name'] = Path(temp_output).name
             writer_config['user_mode'] = False
         else:  # skin
             writer_config['npz_dir'] = str(skeleton_npz_dir)
-            writer_config['output_name'] = str(output_file)
+            writer_config['output_name'] = str(temp_output)
             writer_config['user_mode'] = True
             writer_config['export_fbx'] = True
         
@@ -250,30 +260,30 @@ class Predictor(BasePredictor):
         
         # Handle output file location and validation
         if inference_type == "skeleton":
-            input_name_stem = Path(input_file).stem
-            actual_output_dir = Path(output_file).parent / input_name_stem
+            input_name_stem = Path(input_model_path).stem
+            actual_output_dir = Path(temp_output).parent / input_name_stem
             actual_output_file = actual_output_dir / "skeleton.fbx"
             
             if not actual_output_file.exists():
-                alt_files = list(Path(output_file).parent.rglob("skeleton.fbx"))
+                alt_files = list(Path(temp_output).parent.rglob("skeleton.fbx"))
                 if alt_files:
                     actual_output_file = alt_files[0]
                 else:
                     raise RuntimeError(f"Skeleton FBX file not found. Expected at: {actual_output_file}")
             
-            if actual_output_file != Path(output_file):
-                shutil.copy2(actual_output_file, output_file)
+            if actual_output_file != Path(temp_output):
+                shutil.copy2(actual_output_file, temp_output)
         
         else:  # skin
-            if not Path(output_file).exists():
-                skin_files = list(Path(output_file).parent.rglob("*skin*.fbx"))
+            if not Path(temp_output).exists():
+                skin_files = list(Path(temp_output).parent.rglob("*skin*.fbx"))
                 if skin_files:
                     actual_output_file = skin_files[0]
-                    shutil.copy2(actual_output_file, output_file)
+                    shutil.copy2(actual_output_file, temp_output)
                 else:
-                    raise RuntimeError(f"Skin FBX file not found. Expected at: {output_file}")
+                    raise RuntimeError(f"Skin FBX file not found. Expected at: {temp_output}")
         
-        return str(output_file)
+        return str(temp_output)
 
     def merge_results_python(self, source_file: str, target_file: str, output_file: str) -> str:
         """Merge results using Python"""
@@ -352,13 +362,14 @@ class Predictor(BasePredictor):
             final_skeleton_file = work_dir / f"{file_stem}_skeleton_only{Path(input_file).suffix}"
             
             print("Generating skeleton...")
-            self.run_inference_python(
+            skeleton_result = self.run_inference_python(
                 str(input_file_path), 
-                str(intermediate_skeleton_file), 
                 "skeleton", 
                 seed, 
                 skeleton_type=skeleton_type
             )
+            # Copy the result to our expected location
+            shutil.copy2(skeleton_result, intermediate_skeleton_file)
             
             print("Merging skeleton with original model...")
             self.merge_results_python(
@@ -378,11 +389,12 @@ class Predictor(BasePredictor):
             intermediate_skin_file = work_dir / f"{file_stem}_skin.fbx"
             final_skin_file = work_dir / f"{file_stem}_full_rigging{Path(input_file).suffix}"
             
-            self.run_inference_python(
+            skin_result = self.run_inference_python(
                 str(intermediate_skeleton_file), 
-                str(intermediate_skin_file), 
                 "skin"
             )
+            # Copy the result to our expected location
+            shutil.copy2(skin_result, intermediate_skin_file)
             
             print("Merging skinning with original model...")
             self.merge_results_python(
