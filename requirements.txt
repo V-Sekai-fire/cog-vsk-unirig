@@ -1,6 +1,6 @@
-torch==2.4.0
-torchvision==0.19.0
-torchaudio==2.4.0
+torch>=2.5.1
+torchvision>=0.20.0
+torchaudio>=2.5.1
 transformers
 python-box
 einops
@@ -11,7 +11,7 @@ addict
 timm
 fast-simplification
 trimesh
-open3d
+open3d>=0.18.0
 pyrender
 huggingface_hub
 numpy==1.26.4
@@ -21,4 +21,7 @@ plotly
 pyyaml
 Pillow
 psutil
-https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.8/flash_attn-2.7.4.post1+cu126torch2.7-cp310-cp310-linux_x86_64.whl
+https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.2/flash_attn-2.8.2+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+spconv-cu124
+https://data.pyg.org/whl/torch-2.5.0%2Bcu124/torch_scatter-2.1.2%2Bpt25cu124-cp310-cp310-linux_x86_64.whl
+https://data.pyg.org/whl/torch-2.5.0%2Bcu124/torch_cluster-1.6.3%2Bpt25cu124-cp310-cp310-linux_x86_64.whl

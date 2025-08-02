@@ -12,45 +12,74 @@ import yaml
 from box import Box
 from cog import BasePredictor, Input, Path as CogPath
 
-# Install required packages at runtime
-def install_runtime_dependencies():
-    """Install packages that need to be installed at runtime"""
+def setup_python_environment():
+    """Setup hybrid Python environment for both system and Blender operations"""
+    import sys
+    
+    # Detect if we're already in Blender
     try:
-        # Set up Blender environment
+        import bpy
+        print("Running in Blender Python environment")
+        return "blender"
+    except ImportError:
+        print("Running in system Python environment")
+        
+        # Set up Blender paths for when we need them
         blender_path = "/opt/blender-4.5.1-linux-x64"
         if os.path.exists(blender_path):
             os.environ["BLENDER_PATH"] = blender_path
             os.environ["PATH"] = f"{blender_path}:{os.environ.get('PATH', '')}"
-            # Add Blender's Python modules to sys.path
-            import sys
-            blender_python_path = f"{blender_path}/4.5/python/lib/python3.11/site-packages"
-            if os.path.exists(blender_python_path) and blender_python_path not in sys.path:
-                sys.path.insert(0, blender_python_path)
+            
+            # Ensure system packages are available to Blender's Python
+            blender_python = f"{blender_path}/4.5/python/bin/python3.11"
+            if os.path.exists(blender_python):
+                # Install critical packages in Blender's Python if needed
+                try:
+                    subprocess.run([blender_python, "-m", "pip", "install", "numpy==1.26.4", "torch>=2.5.1"], 
+                                 check=False, capture_output=True, timeout=60)
+                    print("Installed critical packages in Blender Python")
+                except Exception as e:
+                    print(f"Warning: Could not install packages in Blender Python: {e}")
+            
             print(f"Blender environment set up at: {blender_path}")
         else:
             print("Warning: Blender not found at expected location")
         
-        # Get PyTorch and CUDA versions
-        torch_version = torch.__version__.split("+")[0]
-        cuda_version = torch.version.cuda
-        
-        if cuda_version:
-            spconv_version = "-cu124"
-            cuda_version = f"cu{cuda_version.replace('.', '')}"
-        else:
-            spconv_version = ""
-            cuda_version = "cpu"
-        
-        # Install spconv
-        subprocess.run(f'pip install spconv{spconv_version}', shell=True, check=False)
-        
-        # Install torch_scatter and torch_cluster
-        subprocess.run(
-            f'pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-{torch_version}+{cuda_version}.html --no-cache-dir', 
-            shell=True, 
-            check=False
-        )
-        
+        return "system"
+
+def execute_blender_operation(script_content, *args):
+    """Execute Python code that requires bpy through Blender subprocess"""
+    blender_path = os.environ.get("BLENDER_PATH", "/opt/blender-4.5.1-linux-x64")
+    blender_executable = f"{blender_path}/blender"
+    
+    if not os.path.exists(blender_executable):
+        raise RuntimeError(f"Blender executable not found at: {blender_executable}")
+    
+    # Create temporary script
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(script_content)
+        script_path = f.name
+    
+    try:
+        # Run Blender in background with the script
+        cmd = [blender_executable, "--background", "--python", script_path] + list(args)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Blender operation timed out")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Blender operation failed: {e.stderr}")
+    finally:
+        try:
+            os.unlink(script_path)
+        except Exception:
+            pass
+
+def install_runtime_dependencies():
+    """Install packages that need to be installed at runtime"""
+    try:
+        env_type = setup_python_environment()
+        print(f"Python environment type: {env_type}")
         print("Runtime dependencies installed successfully")
     except Exception as e:
         print(f"Warning: Failed to install some runtime dependencies: {e}")
@@ -60,8 +89,9 @@ class Predictor(BasePredictor):
         """Load the model into memory to make running multiple predictions efficient"""
         print("Setting up UniRig predictor...")
         
-        # Install runtime dependencies
+        # Install runtime dependencies and detect environment
         install_runtime_dependencies()
+        self.python_env = setup_python_environment()
         
         # Set device
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -72,6 +102,32 @@ class Predictor(BasePredictor):
         self.temp_dir.mkdir(exist_ok=True)
         
         print("UniRig setup complete!")
+
+    def execute_blender_if_needed(self, operation_name: str, script_content: str = None, *args):
+        """Execute Blender operations if needed, with fallback handling"""
+        if self.python_env == "blender":
+            # Already in Blender, can import bpy directly
+            try:
+                import bpy
+                print(f"Executing {operation_name} in Blender environment")
+                return True
+            except ImportError:
+                print(f"Warning: bpy not available even in Blender environment for {operation_name}")
+                return False
+        else:
+            # In system Python, use subprocess if script provided
+            if script_content:
+                try:
+                    print(f"Executing {operation_name} via Blender subprocess")
+                    result = execute_blender_operation(script_content, *args)
+                    print(f"Blender operation {operation_name} completed successfully")
+                    return result
+                except Exception as e:
+                    print(f"Warning: Blender operation {operation_name} failed: {e}")
+                    return False
+            else:
+                print(f"Skipping {operation_name} - no Blender script provided")
+                return False
 
     def validate_input_file(self, file_path: str) -> bool:
         """Validate if the input file format is supported."""

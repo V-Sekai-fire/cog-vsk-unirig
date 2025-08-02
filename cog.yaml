@@ -25,6 +25,7 @@ build:
     - "libgomp1"
     - "wget"
     - "xz-utils"
+    - "blender"
 
   python_version: "3.10"
 
